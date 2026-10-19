@@ -28,4 +28,4 @@ The repository starts as an npm workspace monorepo. Applications and packages ar
 - Dashboard authentication: Argon2id password hashes, eight-hour random server-side sessions stored by token hash, HTTP-only `SameSite=Strict` cookies, and double-submit CSRF checks for state-changing requests.
 - Deployment: Docker Compose with PostgreSQL as the only persistent service, separate API and worker Node processes, and Nginx static containers for checkout and dashboard. TLS is terminated by an external reverse proxy.
 - SDK: `@orbitt/sdk` is an ESM TypeScript package with a Fetch-based client and Web Crypto webhook verifier. Publishing to a package registry is outside this repository build.
-- Product boundary: chain watcher adapters exist, but the current worker only delivers webhook outbox entries. No chain watcher or invoice confirmation loop is active yet.
+- Product boundary: the worker scans BTC/LTC/native ETH invoice addresses, updates transfer and confirmation state, expires invoices, and dispatches webhook outbox entries. Token, Solana, and Tron scanning plus reorganization recovery are future work.

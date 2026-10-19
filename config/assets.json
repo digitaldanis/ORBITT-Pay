@@ -3,6 +3,7 @@
   { "asset": "BTC", "network": "bitcoin-testnet", "family": "utxo", "decimals": 8, "enabled": false, "derivation_asset": "BTC", "derivation_network": "testnet" },
   { "asset": "LTC", "network": "litecoin", "family": "utxo", "decimals": 8, "enabled": true, "derivation_asset": "LTC", "derivation_network": "mainnet" },
   { "asset": "ETH", "network": "ethereum", "family": "evm", "decimals": 18, "enabled": true },
+  { "asset": "ETH", "network": "ethereum-sepolia", "family": "evm", "decimals": 18, "enabled": false },
   { "asset": "ETH", "network": "base", "family": "evm", "decimals": 18, "enabled": true },
   { "asset": "ETH", "network": "arbitrum", "family": "evm", "decimals": 18, "enabled": true },
   { "asset": "ETH", "network": "optimism", "family": "evm", "decimals": 18, "enabled": true },

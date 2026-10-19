@@ -28,3 +28,9 @@ On the first scan, the adapter reads the latest address page. Persist the return
 - Recheck recent EVM blocks to handle reorganizations; do not treat a block as final solely because it first appeared.
 - Set per-network confirmation requirements in configuration.
 - Do not log RPC or explorer URLs because operators may include provider credentials in those URLs.
+
+## Current worker wiring
+
+The worker currently connects the Esplora adapter to BTC/LTC invoice addresses and the EVM adapter to native ETH addresses. It stores detected transfers and EVM scan cursors in PostgreSQL, refreshes EVM confirmations, expires unpaid invoices, and queues status webhooks in the same database transactions. Configure `BITCOIN_RPC_URL` and `LITECOIN_RPC_URL` with comma-separated Esplora-compatible API base URLs; despite the legacy variable names, these are not Bitcoin Core JSON-RPC endpoints. EVM variables such as `ETHEREUM_RPC_URL` accept comma-separated JSON-RPC URLs. The worker checks the configured chain ID before scanning.
+
+Per-network confirmation defaults are in the worker scanner; override them with `CONFIRMATIONS_<NETWORK>` environment variables, for example `CONFIRMATIONS_ETHEREUM=12`. On first scan, an EVM network starts near the current head, then stores a durable block cursor. Keep the worker running before creating invoices and configure a reliable RPC/explorer provider. Chain reorganization recovery, ERC-20/SPL/TRC-20 invoice scanning, Solana and Tron worker wiring, and full testnet payment verification remain incomplete. This worker milestone is not production payment assurance.

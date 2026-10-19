@@ -8,6 +8,8 @@
     "start": "tsx src/start.ts"
   },
   "dependencies": {
+    "@orbitt/chains": "*",
+    "@orbitt/core": "*",
     "@orbitt/webhooks": "*",
     "dotenv": "16.6.1",
     "pg": "8.23.1",

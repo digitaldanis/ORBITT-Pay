@@ -6,7 +6,7 @@
 
 ORBITT PAY is an early-stage project. This repository includes invoice and amount domain logic, public address derivation, a PostgreSQL-backed merchant API, cached exchange rates, chain-family watcher adapters, a signed webhook outbox worker, hosted checkout, a merchant dashboard, a JavaScript SDK, and a Docker Compose deployment.
 
-**Do not use this version to process real payments.** Invoice allocation currently supports BTC, LTC, and native ETH. Chain watcher adapters exist, but the worker does not yet scan chains or advance invoice confirmations.
+**Do not use this version to process real payments.** Invoice allocation and worker scanning currently cover BTC, LTC, and native ETH. EVM reorganization recovery, ERC-20/Solana/Tron invoice scanning, and testnet end-to-end verification remain incomplete.
 
 ## Features
 
@@ -29,7 +29,8 @@ flowchart LR
   Worker[Webhook worker] -->|Signed delivery| Merchant[Merchant webhook]
   Worker --> DB
   Dashboard[Merchant dashboard] -->|Session API| API
-  Adapters[Chain watcher adapters] -. not yet connected .-> Worker
+  Adapters[BTC/LTC/native ETH watcher adapters] --> Worker
+  Other[ERC-20/Solana/Tron adapters] -. not wired .-> Worker
 ```
 
 ## Quick start
@@ -67,7 +68,7 @@ The first invoice allocator supports BTC, LTC, and native ETH on configured EVM 
 
 ## Current limitations
 
-- The worker dispatches webhook outbox records but does not run chain scans, match transfers, update confirmation counts, or expire invoices.
+- The worker scans BTC/LTC/native ETH invoices, records transfers and confirmations, expires invoices, and dispatches webhook events. It does not yet process ERC-20/Solana/Tron invoices or recover cleanly from chain reorganizations.
 - Testnet end-to-end payment verification has not been completed.
 - Dashboard TOTP and payment timelines/manual webhook redelivery controls are outstanding.
 - Read [chain watcher notes](./docs/chain-watchers.md), [security and legal notes](./docs/legal.md), and [architecture decisions](./docs/decisions.md) before evaluating the project.

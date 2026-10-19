@@ -70,6 +70,27 @@ export const invoices = pgTable('invoices', {
     .where(sql`${table.address} IS NOT NULL AND ${table.status} IN ('created', 'awaiting_payment', 'detected', 'confirming', 'underpaid', 'overpaid')`),
 }));
 
+export const invoicePayments = pgTable('invoice_payments', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  invoiceId: uuid('invoice_id').notNull().references(() => invoices.id),
+  transactionId: varchar('transaction_id', { length: 128 }).notNull(),
+  asset: varchar('asset', { length: 32 }).notNull(),
+  amountBaseUnits: text('amount_base_units').notNull(),
+  confirmations: bigint('confirmations', { mode: 'bigint' }).notNull().default(0n),
+  blockNumber: bigint('block_number', { mode: 'bigint' }),
+  observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  transactionUnique: uniqueIndex('invoice_payments_transaction_unique').on(table.invoiceId, table.transactionId, table.asset),
+}));
+
+export const chainScanCursors = pgTable('chain_scan_cursors', {
+  network: varchar('network', { length: 48 }).primaryKey(),
+  cursorBlock: bigint('cursor_block', { mode: 'bigint' }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const idempotencyKeys = pgTable('idempotency_keys', {
   id: uuid('id').defaultRandom().primaryKey(),
   merchantId: uuid('merchant_id').notNull().references(() => merchants.id),
