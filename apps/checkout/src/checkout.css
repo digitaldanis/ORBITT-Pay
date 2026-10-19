@@ -120,6 +120,41 @@ button:disabled { cursor: default; }
 .notice { margin: 14px 0 0; padding: 12px 14px; border-radius: 16px; background: rgba(251, 191, 36, .07); color: #f3dd9b; font-size: 14px; line-height: 1.5; }
 .notice.calm { background: rgba(74, 168, 245, .08); color: #bfe0ff; }
 
+/* Waiting for the transfer */
+.watching { display: flex; align-items: flex-start; gap: 12px; margin-top: 14px; padding: 13px 14px; border: 1px solid rgba(74, 168, 245, .16); border-radius: 16px; background: rgba(74, 168, 245, .06); }
+.watching strong { display: block; font-size: 14px; font-weight: 600; }
+.watching p { margin: 3px 0 0; color: var(--ob-muted); font-size: 13px; line-height: 1.45; }
+.radar { position: relative; width: 12px; height: 12px; flex-shrink: 0; margin: 4px 2px 0; border-radius: 50%; background: var(--ob-blue); }
+.radar::after { position: absolute; inset: 0; border-radius: 50%; background: var(--ob-blue); animation: radar 1.8s var(--ob-ease) infinite; content: ""; }
+@keyframes radar { to { transform: scale(3); opacity: 0; } }
+
+/* Payment on its way */
+.progress-block { margin-top: 18px; padding: 18px; border: 1px solid var(--ob-border); border-radius: 20px; background: linear-gradient(180deg, rgba(123, 92, 250, .1), rgba(74, 168, 245, .04)); animation: rise .4s var(--ob-ease) both; }
+.progress-head { display: flex; align-items: center; gap: 12px; }
+.progress-head h2 { margin: 0; font-family: var(--ob-font-display); font-size: 18px; font-weight: 600; letter-spacing: -.02em; }
+.progress-head p { margin: 2px 0 0; color: var(--ob-muted); font-size: 13px; }
+.progress-icon { display: grid; width: 44px; height: 44px; flex-shrink: 0; place-items: center; border-radius: 14px; background: rgba(255, 255, 255, .06); }
+.confirm-bar { height: 8px; margin-top: 18px; overflow: hidden; border-radius: 8px; background: rgba(255, 255, 255, .08); }
+.confirm-bar i { display: block; height: 100%; border-radius: inherit; background: var(--ob-gradient); box-shadow: 0 0 16px rgba(123, 92, 250, .5); transition: width .8s var(--ob-ease); }
+.confirm-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; margin-top: 10px; color: var(--ob-muted); font-size: 13px; }
+.confirm-meta strong { color: var(--ob-text); font-weight: 600; }
+.progress-text { margin: 14px 0 0; color: var(--ob-muted); font-size: 13px; line-height: 1.5; }
+
+/* Transfers seen on chain */
+.transactions { margin-top: 14px; }
+.transactions h3 { margin: 0 0 8px; color: var(--ob-faint); font-size: 11.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.transactions ul { margin: 0; padding: 0; border: 1px solid var(--ob-border); border-radius: 16px; list-style: none; }
+.transactions li { display: flex; align-items: center; gap: 12px; padding: 11px 14px; }
+.transactions li + li { border-top: 1px solid rgba(255, 255, 255, .05); }
+.tx-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--ob-warning); box-shadow: 0 0 0 3px rgba(251, 191, 36, .14); }
+.tx-dot.is-done { background: var(--ob-success); box-shadow: 0 0 0 3px rgba(52, 211, 153, .14); }
+.tx-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; font-size: 13px; }
+.tx-main a, .tx-main .muted { overflow: hidden; color: var(--ob-blue); font-size: 12px; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.tx-main .muted { color: var(--ob-faint); }
+.tx-state { color: var(--ob-muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.receipt dd a { color: var(--ob-blue); text-decoration: none; }
+.timeline small { margin-top: -4px; color: var(--ob-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+
 .timeline { display: grid; grid-template-columns: repeat(4, 1fr); margin: 20px 0 0; padding: 0; list-style: none; }
 .timeline li { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--ob-faint); font-size: 12px; font-weight: 500; }
 .timeline li:not(:last-child)::after { position: absolute; top: 5px; left: calc(50% + 10px); width: calc(100% - 20px); height: 2px; border-radius: 2px; background: rgba(255, 255, 255, .08); content: ""; }

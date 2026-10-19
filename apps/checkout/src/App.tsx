@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { BrandLockup, CoinIcon, OrbitMark } from '@orbitt/ui';
-import { buildPaymentUri, toBaseUnits } from './payment-uri.js';
+import { buildPaymentUri, explorerTransactionUrl, toBaseUnits } from './payment-uri.js';
 import { format, formatFiat, t } from './i18n.js';
 
 type Status = 'created' | 'awaiting_payment' | 'detected' | 'confirming' | 'paid' | 'underpaid' | 'overpaid' | 'expired' | 'late_payment' | 'cancelled';
@@ -39,6 +39,10 @@ export interface PublicInvoice {
   success_url: string | null;
   cancel_url: string | null;
   payment_options: PaymentOption[];
+  confirmations: number | null;
+  required_confirmations: number | null;
+  confirmation_eta_seconds: number | null;
+  transactions: Array<{ transaction_id: string; amount: string; confirmations: number; observed_at: string }>;
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
@@ -207,6 +211,68 @@ function qrLogo(): string {
   return `data:image/svg+xml;base64,${btoa(svg)}`;
 }
 
+function etaLabel(seconds: number | null): string | null {
+  if (seconds === null) return null;
+  if (seconds < 60) return t.etaLessThanMinute;
+  if (seconds < 90 * 60) return format(t.etaMinutes, { minutes: Math.round(seconds / 60) });
+  return format(t.etaHours, { hours: Math.round(seconds / 360) / 10 });
+}
+
+function Transactions({ invoice }: { invoice: PublicInvoice }) {
+  if (!invoice.transactions.length || !invoice.network) return null;
+  const required = invoice.required_confirmations ?? 1;
+  return (
+    <section className="transactions" aria-label={t.transactions}>
+      <h3>{t.transactions}</h3>
+      <ul>
+        {invoice.transactions.map((transfer) => {
+          const link = explorerTransactionUrl(invoice.network!, transfer.transaction_id);
+          const done = transfer.confirmations >= required;
+          const label = `${transfer.transaction_id.slice(0, 8)}…${transfer.transaction_id.slice(-6)}`;
+          return (
+            <li key={transfer.transaction_id}>
+              <span className={`tx-dot${done ? ' is-done' : ''}`} aria-hidden="true" />
+              <div className="tx-main">
+                <span className="mono">{transfer.amount} {invoice.asset}</span>
+                {link ? <a href={link} target="_blank" rel="noreferrer" className="mono">{label}</a> : <span className="mono muted">{label}</span>}
+              </div>
+              <span className="tx-state">{done ? t.confirmedShort : required > 1 ? `${Math.min(transfer.confirmations, required)}/${required}` : t.pendingShort}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/** Shown once the full amount is on its way: replaces the QR code with confirmation progress. */
+function ConfirmationProgress({ invoice }: { invoice: PublicInvoice }) {
+  const required = invoice.required_confirmations ?? 1;
+  const count = Math.min(invoice.confirmations ?? 0, required);
+  const eta = etaLabel(invoice.confirmation_eta_seconds);
+  return (
+    <section className="progress-block" aria-live="polite">
+      <div className="progress-head">
+        <span className="progress-icon" aria-hidden="true"><OrbitMark size={30} spinning /></span>
+        <div>
+          <h2>{t.paymentSeen}</h2>
+          <p>{required > 1 ? t.waitingConfirmations : t.finalizing}</p>
+        </div>
+      </div>
+      {required > 1 && (
+        <>
+          <div className="confirm-bar" role="progressbar" aria-valuemin={0} aria-valuemax={required} aria-valuenow={count}>
+            <i style={{ width: `${Math.max(4, (count / required) * 100)}%` }} />
+          </div>
+          <div className="confirm-meta"><strong>{format(t.confirmationsOf, { count, required })}</strong>{eta && <span>{eta}</span>}</div>
+        </>
+      )}
+      {required <= 1 && eta && <div className="confirm-meta"><span>{eta}</span></div>}
+      <p className="progress-text">{format(t.confirmingExplainer, { required, merchant: invoice.merchant_name })}</p>
+    </section>
+  );
+}
+
 function PaymentCard({ invoice, onRefresh }: { invoice: PublicInvoice; onRefresh: () => void }) {
   const seconds = useCountdown(invoice.expires_at);
   const { copied, error: copyError, copy } = useCopy();
@@ -227,6 +293,7 @@ function PaymentCard({ invoice, onRefresh }: { invoice: PublicInvoice; onRefresh
     });
   }, [invoice, amount, asset]);
   const deepLink = /^[a-z]+:/.test(uri) ? uri : null;
+  const onTheWay = ['detected', 'confirming', 'overpaid'].includes(invoice.status);
   const stage = invoice.status === 'paid' ? 3 : invoice.status === 'confirming' || invoice.status === 'overpaid' ? 2 : ['detected', 'underpaid'].includes(invoice.status) ? 1 : 0;
   const canCancel = invoice.status === 'awaiting_payment' && invoice.received_amount === '0' && !timedOut;
 
@@ -250,7 +317,7 @@ function PaymentCard({ invoice, onRefresh }: { invoice: PublicInvoice; onRefresh
         <div className="amount-main">
           <CoinIcon asset={asset} network={invoice.network} size={44} />
           <div>
-            <p className="eyebrow">{partial ? t.sendRemaining : t.sendExactly}</p>
+            <p className="eyebrow">{onTheWay ? t.amountSent : partial ? t.sendRemaining : t.sendExactly}</p>
             <p className="crypto-amount"><span className="value">{amount}</span> <span className="ticker">{asset}</span></p>
             <p className="fiat">{t.orderTotal} {formatFiat(invoice.request_amount, invoice.request_currency)} · {invoice.network_name}</p>
           </div>
@@ -266,7 +333,7 @@ function PaymentCard({ invoice, onRefresh }: { invoice: PublicInvoice; onRefresh
         )}
       </section>
 
-      {timedOut ? <p className="notice">{t.expiredText}</p> : (
+      {timedOut ? <p className="notice">{t.expiredText}</p> : onTheWay ? <ConfirmationProgress invoice={invoice} /> : (
         <>
           <section className="qr-block">
             <div className="qr-frame">
@@ -293,14 +360,23 @@ function PaymentCard({ invoice, onRefresh }: { invoice: PublicInvoice; onRefresh
         </>
       )}
 
+      {invoice.status === 'awaiting_payment' && !timedOut && (
+        <div className="watching" role="status">
+          <span className="radar" aria-hidden="true" />
+          <div><strong>{t.noPaymentYet}</strong><p>{format(t.noPaymentYetText, { network: invoice.network_name ?? invoice.network ?? '' })}</p></div>
+        </div>
+      )}
+      <Transactions invoice={invoice} />
       {partial && <p className="notice">{format(t.underpaidNotice, { received: invoice.received_amount, remaining: invoice.remaining_amount, asset })}</p>}
       {invoice.status === 'overpaid' && <p className="notice">{t.overpaidNotice}</p>}
-      {['detected', 'confirming'].includes(invoice.status) && <p className="notice calm">{t.confirmingNotice}</p>}
 
       <ol className="timeline" aria-label="Payment progress">
         {t.steps.map((label, index) => (
           <li key={label} className={index <= stage ? 'is-active' : ''} aria-current={index === stage ? 'step' : undefined}>
             <span className="dot" />{label}
+            {index === 2 && stage === 2 && (invoice.required_confirmations ?? 1) > 1 && (
+              <small>{Math.min(invoice.confirmations ?? 0, invoice.required_confirmations!)}/{invoice.required_confirmations}</small>
+            )}
           </li>
         ))}
       </ol>
@@ -340,6 +416,11 @@ function ResultCard({ invoice }: { invoice: PublicInvoice }) {
             <div><dt>{t.amount}</dt><dd className="mono">{invoice.received_amount} {invoice.asset}</dd></div>
             <div><dt>{t.orderTotal}</dt><dd>{formatFiat(invoice.request_amount, invoice.request_currency)}</dd></div>
             {invoice.order_id && <div><dt>{t.order}</dt><dd>{invoice.order_id}</dd></div>}
+            {invoice.transactions.map((transfer) => {
+              const link = invoice.network ? explorerTransactionUrl(invoice.network, transfer.transaction_id) : null;
+              const label = `${transfer.transaction_id.slice(0, 8)}…${transfer.transaction_id.slice(-6)}`;
+              return <div key={transfer.transaction_id}><dt>{t.viewTransaction}</dt><dd className="mono">{link ? <a href={link} target="_blank" rel="noreferrer">{label}</a> : label}</dd></div>;
+            })}
           </dl>
         )}
         {target && <a className="primary-button" href={target}>{paid ? format(t.continue, { merchant: invoice.merchant_name }) : t.backToShop}</a>}
