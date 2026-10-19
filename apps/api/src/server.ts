@@ -171,6 +171,7 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
   const app = Fastify({
     logger: options.logger === false ? false : { redact: ['req.headers.authorization', 'req.headers.cookie'] },
     logController: new LogController({ disableRequestLogging: false, requestIdLogLabel: 'request_id' }),
+    trustProxy: process.env.TRUST_PROXY === 'true',
     requestIdHeader: 'x-request-id',
     bodyLimit: 64 * 1024,
     ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: true } },

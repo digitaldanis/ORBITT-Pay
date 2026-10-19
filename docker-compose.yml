@@ -1,0 +1,87 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orbitt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-orbitt}
+    volumes:
+      - orbitt_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U '$$POSTGRES_USER' -d '$$POSTGRES_DB'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    restart: unless-stopped
+    command: ["sh", "-c", "npm run db:migrate --workspace apps/api && npm run start --workspace apps/api"]
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      TRUST_PROXY: "true"
+      DATABASE_URL: postgres://${POSTGRES_USER:-orbitt}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-orbitt}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      CHECKOUT_BASE_URL: ${CHECKOUT_BASE_URL:-http://localhost:8080}
+      ORBITT_ASSETS_FILE: /app/config/assets.json
+      ORBITT_RATE_ASSETS_FILE: /app/packages/rates/config/assets.json
+      INVOICE_EXPIRY_MINUTES: ${INVOICE_EXPIRY_MINUTES:-15}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 25s
+    stop_grace_period: 30s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-orbitt}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-orbitt}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+    depends_on:
+      api:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  checkout:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: checkout
+    restart: unless-stopped
+    ports:
+      - "${CHECKOUT_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dashboard
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-8081}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  orbitt_postgres:
