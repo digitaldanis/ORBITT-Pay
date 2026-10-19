@@ -14,6 +14,7 @@
   },
   "files": ["dist"],
   "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json"
   }
 }

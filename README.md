@@ -4,23 +4,51 @@
 
 **Payments for every chain.** ORBITT PAY is a self-hosted, non-custodial crypto payment processor for online shops. Merchants configure public wallet keys; the service creates invoices, watches for payments, and sends signed webhooks.
 
-> Project status: core invoice logic, public address derivation, PostgreSQL-backed merchant API, cached exchange rates, initial chain watchers, signed webhook delivery, hosted checkout, and a session-protected merchant dashboard are implemented. Complete self-hosted deployment is still in progress.
+ORBITT PAY is an early-stage project. This repository includes invoice and amount domain logic, public address derivation, a PostgreSQL-backed merchant API, cached exchange rates, chain-family watcher adapters, a signed webhook outbox worker, hosted checkout, a merchant dashboard, a JavaScript SDK, and a Docker Compose deployment.
 
-## Design principles
+**Do not use this version to process real payments.** Invoice allocation currently supports BTC, LTC, and native ETH. Chain watcher adapters exist, but the worker does not yet scan chains or advance invoice confirmations.
 
-- Non-custodial: merchant private keys and seed phrases never enter the service.
-- Exact amounts: payment values use integer base units and decimal exchange-rate math.
-- Self-hosted: deployment configuration and operational documentation are part of the product.
-- Multi-chain: asset and network support is configuration-driven.
+## Features
 
-## Repository layout
+- Non-custodial architecture: merchant private keys and seed phrases are not stored by the service.
+- Exact amount math uses integer base units and decimal exchange-rate calculations.
+- PostgreSQL persistence, idempotent invoice creation, API key authentication, and OpenAPI documentation.
+- HMAC-signed webhook delivery with an encrypted outbox and retry worker.
+- Mobile hosted checkout with QR codes, payment URIs, countdown, and status polling.
+- Session-protected merchant dashboard, JavaScript SDK, and Docker Compose self-hosting.
 
-```text
-apps/       API, dashboard, checkout, and worker applications
-packages/   Domain, chain, rates, webhook, SDK, and UI packages
-docker/     Local and self-hosted deployment configuration
-docs/       Architecture, API, integration, and operations documentation
+## Architecture
+
+```mermaid
+flowchart LR
+  Shop[Merchant shop] -->|REST API| API[Fastify API]
+  API --> DB[(PostgreSQL)]
+  Customer -->|Hosted checkout| Checkout[React checkout]
+  Checkout -->|Public invoice polling| API
+  API -->|Outbox events| DB
+  Worker[Webhook worker] -->|Signed delivery| Merchant[Merchant webhook]
+  Worker --> DB
+  Dashboard[Merchant dashboard] -->|Session API| API
+  Adapters[Chain watcher adapters] -. not yet connected .-> Worker
 ```
+
+## Quick start
+
+Requirements: Docker Engine and the Compose plugin.
+
+```sh
+cp .env.example .env
+# Set POSTGRES_PASSWORD and APP_ENCRYPTION_KEY in .env.
+docker compose up --build -d
+```
+
+Checkout is served at `http://localhost:8080`, the dashboard at `http://localhost:8081`, and API health at `http://localhost:8080/health`. Create a merchant key with:
+
+```sh
+docker compose exec api npm run api-key:create --workspace apps/api -- "Example Shop"
+```
+
+See [deployment instructions](./docs/deployment.md) for secret generation, dashboard-user creation, HTTPS setup, backup, and restore. See the [merchant integration guide](./docs/integration.md) to create invoices and verify webhooks.
 
 ## Development
 
@@ -32,25 +60,22 @@ npm ci
 npm run typecheck
 npm run lint
 npm test
+npm run build
 ```
 
-To initialize PostgreSQL and create the first merchant API key:
+The first invoice allocator supports BTC, LTC, and native ETH on configured EVM networks. Token, Solana, and Tron invoice allocation is not implemented yet.
 
-```sh
-npm run db:migrate --workspace apps/api
-npm run api-key:create --workspace apps/api -- "Example Shop"
-npm run dashboard:user:create --workspace apps/api -- <merchant-uuid> owner@example.com
-npm run start --workspace apps/api
-npm run start --workspace apps/worker
-npm run dev --workspace apps/dashboard
-```
+## Current limitations
 
-Before creating the dashboard user, set `DASHBOARD_USER_PASSWORD` in your local `.env` file. The merchant ID is printed by the key-creation command. Both the API key and webhook signing secret are shown once; save them securely. Configure at least one public account key through `PUT /v1/account/wallets` before creating invoices. The initial invoice allocator supports BTC, LTC, and native ETH on the configured EVM networks; see [docs/api.md](./docs/api.md) and [docs/dashboard.md](./docs/dashboard.md).
+- The worker dispatches webhook outbox records but does not run chain scans, match transfers, update confirmation counts, or expire invoices.
+- Testnet end-to-end payment verification has not been completed.
+- Dashboard TOTP and payment timelines/manual webhook redelivery controls are outstanding.
+- Read [chain watcher notes](./docs/chain-watchers.md), [security and legal notes](./docs/legal.md), and [architecture decisions](./docs/decisions.md) before evaluating the project.
 
 ## Security
 
-Never put private keys, seed phrases, production API credentials, or populated `.env` files in this repository. See [AGENT_BRIEF.md](./AGENT_BRIEF.md) for the project requirements and [docs/decisions.md](./docs/decisions.md) for recorded defaults.
+Never put private keys, seed phrases, production API credentials, or populated `.env` files in this repository. Keep API keys and webhook signing secrets in a secret manager. See the [security notes](./docs/legal.md) and the [project requirements](./AGENT_BRIEF.md).
 
 ## License
 
-Proprietary. All rights reserved. W-Digital (hallo@w-digital.eu).
+Proprietary. All rights reserved. W-Digital (hallo@w-digital.eu). See [LICENSE](./LICENSE).
