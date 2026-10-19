@@ -3,6 +3,8 @@ import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { hashApiKey, readBearerToken } from './auth/api-key.js';
+import { ApiError } from './errors.js';
+export { ApiError } from './errors.js';
 
 export const invoiceStatuses = [
   'created', 'awaiting_payment', 'detected', 'confirming', 'paid',
@@ -101,8 +103,8 @@ const createBody = {
     amount: { type: 'string', pattern: '^\\d+(\\.\\d{1,18})?$' },
     currency: { type: 'string', minLength: 2, maxLength: 12 },
     asset: { type: 'string', minLength: 2, maxLength: 32 }, network: { type: 'string', minLength: 2, maxLength: 48 },
-    order_id: { type: 'string', maxLength: 255 }, success_url: { type: 'string', format: 'uri', maxLength: 2048 },
-    cancel_url: { type: 'string', format: 'uri', maxLength: 2048 }, webhook_url: { type: 'string', format: 'uri', maxLength: 2048 },
+    order_id: { type: 'string', maxLength: 255 }, success_url: { type: 'string', format: 'uri', pattern: '^https?://', maxLength: 2048 },
+    cancel_url: { type: 'string', format: 'uri', pattern: '^https?://', maxLength: 2048 }, webhook_url: { type: 'string', format: 'uri', pattern: '^https?://', maxLength: 2048 },
     metadata: { type: 'object', additionalProperties: true },
   },
 } as const;
@@ -150,6 +152,7 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
   await app.register(swaggerUi, { routePrefix: '/docs', uiConfig: { docExpansion: 'list', deepLinking: true } });
 
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof ApiError) return fail(reply, error.statusCode, error.code, error.message, error.param);
     const validation = (error as Error & { validation?: Array<{ instancePath?: string }> }).validation;
     if (validation) return fail(reply, 400, 'invalid_request', 'The request is invalid.', validation[0]?.instancePath || undefined);
     request.log.error({ err: error }, 'Unhandled API error');
@@ -223,15 +226,8 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
     },
   }, async (request) => services.updateWallets(request.merchant!, request.body.wallets));
 
-  app.post('/v1/webhooks/test', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, schema: { tags: ['webhooks'], summary: 'Send a test webhook', response: { 200: { type: 'object', required: ['accepted'], properties: { accepted: { type: 'boolean' } } } } } }, async (request) => services.sendTestWebhook(request.merchant!));
+  app.post('/v1/webhooks/test', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, schema: { tags: ['webhooks'], summary: 'Send a test webhook', response: { 200: { type: 'object', required: ['accepted'], properties: { accepted: { type: 'boolean' } } }, 401: errorSchema, 422: errorSchema, 429: errorSchema, 500: errorSchema } } }, async (request) => services.sendTestWebhook(request.merchant!));
 
   app.get('/v1/openapi.json', { schema: { hide: true } }, async () => app.swagger());
   return app;
-}
-
-export class ApiError extends Error {
-  constructor(readonly statusCode: 400 | 401 | 404 | 409 | 422 | 429 | 500, readonly code: string, message: string, readonly param?: string) {
-    super(message);
-    this.name = 'ApiError';
-  }
 }

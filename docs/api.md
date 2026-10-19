@@ -8,6 +8,10 @@ Send `Authorization: Bearer <secret_key>` on merchant endpoints. API keys are ge
 
 The public health endpoint is `GET /health`. The generated OpenAPI 3.1 document is available at `GET /v1/openapi.json`, and Swagger UI at `/docs`.
 
+Initialize the database with `npm run db:migrate --workspace apps/api`, create the first merchant with `npm run api-key:create --workspace apps/api -- "Shop name"`, then start the API with `npm run start --workspace apps/api`. Set `DATABASE_URL`, `PUBLIC_BASE_URL`, and `PORT` in the environment. `ORBITT_ASSETS_FILE` and `ORBITT_RATE_ASSETS_FILE` can point to alternate JSON configurations.
+
+The initial invoice preparer supports BTC and LTC receive derivation plus native ETH on the configured EVM networks. Each invoice requires a configured account-level public key (`zpub` for BTC, an accepted account xpub for LTC, or an account xpub for EVM). Fiat quotes currently use EUR/USD provider configuration. Add token contract and precision entries to the asset configuration before enabling token invoices. Address-only wallets are stored for later network integrations but cannot currently allocate unique invoice addresses.
+
 ## Endpoints
 
 | Method | Path | Purpose |
@@ -36,4 +40,4 @@ Content-Type: application/json
 {"amount":"49.95","currency":"EUR","asset":"BTC","network":"bitcoin","order_id":"1042"}
 ```
 
-The response includes the invoice ID, locked quote, checkout URL, status, and expiry. Keep the secret key on the merchant server; use the hosted checkout URL for the customer.
+The response includes the invoice ID, locked quote, checkout URL, status, and expiry. Keep the secret key on the merchant server; use the hosted checkout URL for the customer. Test-webhook delivery remains unavailable until the webhook dispatcher is configured.

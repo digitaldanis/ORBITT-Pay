@@ -4,13 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "db:migrate": "tsx src/cli/migrate.ts",
+    "api-key:create": "tsx src/cli/create-merchant-key.ts",
+    "start": "tsx src/cli/start.ts"
   },
   "dependencies": {
     "@fastify/rate-limit": "11.2.1",
     "@fastify/swagger": "9.9.2",
     "@fastify/swagger-ui": "6.1.2",
+    "@orbitt/chains": "*",
+    "@orbitt/core": "*",
+    "@orbitt/rates": "*",
+    "dotenv": "16.6.1",
     "drizzle-orm": "^0.45.4",
-    "fastify": "5.12.7"
+    "fastify": "5.12.7",
+    "pg": "8.23.1"
   }
 }

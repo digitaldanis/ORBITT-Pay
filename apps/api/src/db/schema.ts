@@ -2,6 +2,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import {
+  bigint,
   jsonb,
   pgEnum,
   pgTable,
@@ -38,17 +39,23 @@ export const invoices = pgTable('invoices', {
   id: uuid('id').defaultRandom().primaryKey(),
   merchantId: uuid('merchant_id').notNull().references(() => merchants.id),
   orderId: varchar('order_id', { length: 255 }),
+  requestAmount: text('request_amount').notNull(),
+  requestCurrency: varchar('request_currency', { length: 12 }).notNull(),
   fiatAmount: text('fiat_amount'),
   fiatCurrency: varchar('fiat_currency', { length: 3 }),
   rateUsed: text('rate_used'),
   rateTimestamp: timestamp('rate_timestamp', { withTimezone: true }),
   cryptoAmountBaseUnits: text('crypto_amount_base_units').notNull(),
+  cryptoAmount: text('crypto_amount').notNull(),
   receivedAmountBaseUnits: text('received_amount_base_units').notNull().default('0'),
   surplusBaseUnits: text('surplus_base_units').notNull().default('0'),
   asset: varchar('asset', { length: 32 }).notNull(),
   network: varchar('network', { length: 48 }).notNull(),
   address: text('address'),
   derivationPath: text('derivation_path'),
+  successUrl: text('success_url'),
+  cancelUrl: text('cancel_url'),
+  webhookUrl: text('webhook_url'),
   status: invoiceStatus('status').notNull().default('created'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
@@ -70,4 +77,18 @@ export const idempotencyKeys = pgTable('idempotency_keys', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 }, (table) => ({
   merchantKeyUnique: uniqueIndex('idempotency_keys_merchant_key_unique').on(table.merchantId, table.key),
+}));
+
+export const merchantWallets = pgTable('merchant_wallets', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  merchantId: uuid('merchant_id').notNull().references(() => merchants.id),
+  asset: varchar('asset', { length: 32 }).notNull(),
+  network: varchar('network', { length: 48 }).notNull(),
+  extendedPublicKey: text('extended_public_key'),
+  address: text('address'),
+  nextDerivationIndex: bigint('next_derivation_index', { mode: 'number' }).notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  merchantAssetNetworkUnique: uniqueIndex('merchant_wallets_merchant_asset_network_unique').on(table.merchantId, table.asset, table.network),
 }));

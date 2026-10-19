@@ -2,9 +2,9 @@
 
 ![ORBITT PAY — Payments for every chain](./orbittpaybanner.png)
 
-**Payments for every chain.** ORBITT PAY is a planned self-hosted, non-custodial crypto payment processor for online shops. Merchants configure public wallet keys or addresses; the service creates invoices, watches for payments, and sends signed webhooks.
+**Payments for every chain.** ORBITT PAY is a self-hosted, non-custodial crypto payment processor for online shops. Merchants configure public wallet keys; the service creates invoices, watches for payments, and sends signed webhooks.
 
-> Project status: core money and invoice logic, public address derivation, PostgreSQL schema, and two-source rate quotes are implemented. The merchant API, checkout, dashboard, and chain watchers are still in progress.
+> Project status: core invoice logic, public address derivation, PostgreSQL-backed merchant API, cached exchange rates, and initial chain watchers are implemented. Checkout, dashboard, and production worker deployment are still in progress.
 
 ## Design principles
 
@@ -34,7 +34,15 @@ npm run lint
 npm test
 ```
 
-The complete deployment flow will be documented with the Docker Compose milestone.
+To initialize PostgreSQL and create the first merchant API key:
+
+```sh
+npm run db:migrate --workspace apps/api
+npm run api-key:create --workspace apps/api -- "Example Shop"
+npm run start --workspace apps/api
+```
+
+The API key is printed once. Save it securely. Configure at least one public account key through `PUT /v1/account/wallets` before creating invoices. The initial invoice allocator supports BTC, LTC, and native ETH on the configured EVM networks; see [docs/api.md](./docs/api.md).
 
 ## Security
 

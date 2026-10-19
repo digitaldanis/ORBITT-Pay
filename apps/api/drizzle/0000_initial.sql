@@ -24,17 +24,23 @@ CREATE TABLE invoices (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   merchant_id uuid NOT NULL REFERENCES merchants(id),
   order_id varchar(255),
+  request_amount text NOT NULL,
+  request_currency varchar(12) NOT NULL,
   fiat_amount text,
   fiat_currency varchar(3),
   rate_used text,
   rate_timestamp timestamptz,
   crypto_amount_base_units text NOT NULL,
+  crypto_amount text NOT NULL,
   received_amount_base_units text NOT NULL DEFAULT '0',
   surplus_base_units text NOT NULL DEFAULT '0',
   asset varchar(32) NOT NULL,
   network varchar(48) NOT NULL,
   address text,
   derivation_path text,
+  success_url text,
+  cancel_url text,
+  webhook_url text,
   status invoice_status NOT NULL DEFAULT 'created',
   expires_at timestamptz NOT NULL,
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -56,4 +62,21 @@ CREATE TABLE idempotency_keys (
   created_at timestamptz NOT NULL DEFAULT now(),
   expires_at timestamptz NOT NULL,
   CONSTRAINT idempotency_keys_merchant_key_unique UNIQUE (merchant_id, key)
+);
+
+CREATE TABLE merchant_wallets (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  merchant_id uuid NOT NULL REFERENCES merchants(id),
+  asset varchar(32) NOT NULL,
+  network varchar(48) NOT NULL,
+  extended_public_key text,
+  address text,
+  next_derivation_index bigint NOT NULL DEFAULT 0 CHECK (next_derivation_index >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT merchant_wallets_source_check CHECK (
+    (extended_public_key IS NOT NULL AND address IS NULL) OR
+    (extended_public_key IS NULL AND address IS NOT NULL)
+  ),
+  CONSTRAINT merchant_wallets_merchant_asset_network_unique UNIQUE (merchant_id, asset, network)
 );
