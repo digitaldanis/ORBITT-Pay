@@ -22,7 +22,7 @@ Create an invoice from a server-side order handler. The decimal amount is a stri
 
 ```ts
 import express from 'express';
-import { OrbittClient, verifyWebhookSignature } from '@orbitt/sdk';
+import { constructWebhookEvent, OrbittClient } from '@orbitt/sdk';
 
 const app = express();
 const orbitt = new OrbittClient({
@@ -39,6 +39,7 @@ app.post('/checkout/:orderId', async (req, res, next) => {
       order_id: order.id,
       success_url: `https://shop.example/orders/${order.id}/complete`,
       metadata: { order_id: order.id },
+      // Leave out asset/network to let the customer pick any coin you accept.
     }, `order-${order.id}`);
 
     res.redirect(303, invoice.checkout_url);
@@ -49,16 +50,14 @@ app.post('/checkout/:orderId', async (req, res, next) => {
 
 // Register this route before express.json(): signature verification needs the exact bytes.
 app.post('/webhooks/orbitt', express.raw({ type: 'application/json' }), async (req, res) => {
-  const rawBody = req.body as Buffer;
-  const signature = req.header('ORBITT-Signature') ?? '';
-  const valid = await verifyWebhookSignature(
-    process.env.ORBITT_WEBHOOK_SECRET!,
-    rawBody,
-    signature,
-  );
-  if (!valid) return res.sendStatus(400);
+  let event;
+  try {
+    // Throws unless the ORBITT-Signature header matches the exact raw bytes and is recent.
+    event = await constructWebhookEvent(process.env.ORBITT_WEBHOOK_SECRET!, req.body as Buffer, req.header('ORBITT-Signature') ?? '');
+  } catch {
+    return res.sendStatus(400);
+  }
 
-  const event = JSON.parse(rawBody.toString('utf8'));
   const deliveryId = req.header('ORBITT-Delivery');
   await processOrbittEventOnce(deliveryId, event);
   return res.sendStatus(204);
@@ -74,7 +73,7 @@ app.use(express.json());
 Do not put a secret API key in browser code. Create the invoice on your own server and render only its hosted checkout URL into the page:
 
 ```html
-<a href="https://checkout.example/invoice/INVOICE_ID" rel="noopener">
+<a href="https://pay.example/checkout/INVOICE_ID" rel="noopener">
   Continue to secure crypto checkout
 </a>
 ```

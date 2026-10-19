@@ -1,36 +1,43 @@
-# Chain watcher adapters
+# Chain watchers
 
 Authorship: W-Digital (hallo@w-digital.eu)
 
-## EVM
+The worker (`apps/worker`) scans every enabled network from `config/assets.json` about every ten seconds. Each network runs on its own, so one failing provider does not stop the others. After each pass the worker writes a heartbeat to `network_scanner_status` (head block, time, last error). The dashboard shows it per network, and the checkout offers only networks with a healthy heartbeat.
 
-`EvmWatcher` scans configured block ranges for direct native-asset transactions and ERC-20 `Transfer` logs. It checks the configured chain ID, supports ordered RPC failover, chunks recipient filters, and computes confirmations from the latest block. When an asset has a configured high-value threshold, the watcher requires a second responsive RPC endpoint and compares the transaction or token receipt before accepting the transfer.
-
-Direct native transfers to invoice addresses are included. Internal value movements caused by contract execution require trace APIs and are not included by this adapter. Configure distinct RPC providers for each EVM network and validate the network at worker startup.
+All endpoint variables accept several comma-separated URLs; the watchers fail over in order. Do not log provider URLs: they often contain API keys.
 
 ## Bitcoin and Litecoin
 
-`EsploraWatcher` reads address transactions and the tip height from Esplora-compatible APIs. Configure the correct API base for each chain and network. It sums outputs to the invoice address, tracks confirmed and mempool transfers, supports saved transaction cursors for pagination, and checks high-value transfers against a second responsive explorer.
+`EsploraWatcher` reads address history and the tip from an Esplora-compatible API (`BITCOIN_ESPLORA_URL`, `LITECOIN_ESPLORA_URL`, e.g. mempool.space and litecoinspace.org). `BITCOIN_RPC_URL` and `LITECOIN_RPC_URL` are accepted as legacy names for the same Esplora base URL; they are not Bitcoin Core JSON-RPC. Outputs to the invoice address are summed per transaction, mempool transfers mark the invoice `detected`, and confirmations come from the tip height.
 
-On the first scan, the adapter reads the latest address page. Persist the returned `nextCursor` and pass it to later scans so the adapter can page back to the last processed transaction. The receiving address should be newly derived for the invoice. Never treat an old transaction already present on a reused address as a payment for a new invoice.
+## EVM networks
 
-## Solana
+Ethereum, Base, Arbitrum, Optimism, Polygon and BNB Smart Chain use JSON-RPC (`ETHEREUM_RPC_URL`, `BASE_RPC_URL`, ...). The worker checks the chain ID, then walks blocks from a stored cursor:
 
-`SolanaWatcher` scans signature history for each configured watch account and reads transaction balance deltas. Native SOL uses the invoice address as the watch account. SPL targets use the invoice's associated token account as `watchAddress`, with its owner wallet and mint supplied in config. Persist a signature cursor per watch account. The watcher reports a confirmation only when the RPC marks the signature finalized. A second RPC is required for assets with a configured high-value threshold.
+- native coins: direct transactions to invoice addresses in each block;
+- tokens: `eth_getLogs` for the ERC-20 `Transfer` event of each configured contract, filtered by recipient.
+
+While no invoice is open on a network the cursor follows the tip, so a new invoice never triggers a long catch-up. Transfers sent internally by a contract (no direct transaction or `Transfer` log) are not detected.
 
 ## TRON
 
-`TronWatcher` reads confirmed TRX and TRC-20 account history from TronGrid-compatible APIs and calculates confirmations against the solidified head block. It pages with the provider's fingerprint cursor, but persists the latest transaction ID as the application cursor. Use separate cursors for TRX and each token contract. A second responsive provider is required for assets with a configured high-value threshold. Provider API keys belong in environment configuration and must not appear in logs.
+`TronWatcher` uses the TronGrid v1 API (`TRON_API_URL`, optional `TRON_API_KEY`). TRX transfers carry a block number and are confirmed against the solidified head. TronGrid's TRC-20 history has no block height and lists only confirmed transfers, so TRC-20 transfers count as confirmed once they appear.
 
-## Operational requirements
+## Solana
 
-- Persist each chain's scan cursor and transfer records before advancing it.
-- Recheck recent EVM blocks to handle reorganizations; do not treat a block as final solely because it first appeared.
-- Set per-network confirmation requirements in configuration.
-- Do not log RPC or explorer URLs because operators may include provider credentials in those URLs.
+Ed25519 keys cannot derive child addresses from a public key, so Solana invoices share the merchant's wallet address and are told apart by amount. Each open invoice gets a unique amount (base quote plus a random offset of up to `max_offset_base_units`) that no other open or recent invoice on that address uses. The worker reads `getSignaturesForAddress` with `finalized` commitment for the wallet (SOL) and its associated token accounts (USDC, USDT), compares balance deltas, and matches transfers to invoices by **exact amount**. A per-account signature cursor in `address_scan_cursors` keeps scans incremental. Set `SOLANA_RPC_URL` to a provider that keeps enough signature history.
 
-## Current worker wiring
+## Matching rules
 
-The worker currently connects the Esplora adapter to BTC/LTC invoice addresses and the EVM adapter to native ETH addresses. It stores detected transfers and EVM scan cursors in PostgreSQL, refreshes EVM confirmations, expires unpaid invoices, and queues status webhooks in the same database transactions. Configure `BITCOIN_RPC_URL` and `LITECOIN_RPC_URL` with comma-separated Esplora-compatible API base URLs; despite the legacy variable names, these are not Bitcoin Core JSON-RPC endpoints. EVM variables such as `ETHEREUM_RPC_URL` accept comma-separated JSON-RPC URLs. The worker checks the configured chain ID before scanning.
+- Each derived address is used for exactly one invoice. The allocator skips any address an earlier invoice on the network already used, even after the merchant replaced the wallet key.
+- Transfers older than the moment the customer picked the coin are ignored, with a small clock tolerance per family (UTXO 2 h for mempool timestamps, TRON 10 min, Solana 5 min). This prevents old history on an address from counting as payment.
+- Funds that arrive after expiry or cancellation move the invoice to `late_payment` only if they are new; re-reading transfers that were already counted does not.
 
-Per-network confirmation defaults are in the worker scanner; override them with `CONFIRMATIONS_<NETWORK>` environment variables, for example `CONFIRMATIONS_ETHEREUM=12`. On first scan, an EVM network starts near the current head, then stores a durable block cursor. Keep the worker running before creating invoices and configure a reliable RPC/explorer provider. Chain reorganization recovery, ERC-20/SPL/TRC-20 invoice scanning, Solana and Tron worker wiring, and full testnet payment verification remain incomplete. This worker milestone is not production payment assurance.
+## Confirmations
+
+Defaults: Bitcoin 2, Litecoin 6, Ethereum 12, Base/Arbitrum/Optimism 10, Polygon 64, BNB Smart Chain 15, TRON 1, Solana 1 (finalized). Override with `CONFIRMATIONS_<NETWORK>`, for example `CONFIRMATIONS_ETHEREUM=20` or `CONFIRMATIONS_BNB_CHAIN=20`.
+
+## Known limits
+
+- A transfer removed by a chain reorganization after it was counted is not rolled back automatically. Confirmation counts are the protection; keep them conservative for high values.
+- Make test payments on every network you enable before going live; behaviour differs between providers.

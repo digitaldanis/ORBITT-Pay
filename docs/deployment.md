@@ -25,7 +25,7 @@ Start all services:
 docker compose up --build -d
 ```
 
-The API waits for PostgreSQL health and applies pending SQL migrations before listening. Nginx serves checkout at `http://localhost:8080`, dashboard at `http://localhost:8081`, and proxies `/v1`, `/docs`, and `/health` to the API. In production, assign the dashboard and checkout separate hostnames and terminate TLS at the front proxy. The worker scans BTC/LTC/native ETH invoices when a provider endpoint is configured, updates transfer/confirmation state, expires unpaid invoices, and dispatches webhook events. It does not yet process token, Solana, or Tron invoice payments.
+The API waits for PostgreSQL health and applies pending SQL migrations before listening. Nginx serves checkout at `http://localhost:8080`, dashboard at `http://localhost:8081`, and proxies `/v1`, `/docs`, and `/health` to the API. In production, assign the dashboard and checkout separate hostnames and terminate TLS at the front proxy. The worker scans every network that has an endpoint configured (see `.env.example` and [chain watchers](./chain-watchers.md)), updates transfer and confirmation state, expires unpaid invoices and delivers webhook events. Networks without an endpoint are simply not offered at checkout.
 
 Create the first merchant and dashboard login:
 
@@ -60,4 +60,4 @@ Restore into a compatible PostgreSQL database with:
 gunzip -c orbitt-postgres.sql.gz | docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-Keep database backups and `APP_ENCRYPTION_KEY` in separate protected storage. The stack currently provisions BTC, LTC, and native ETH invoice allocation; token, Solana, and Tron invoice creation require their later address and asset integrations. Chain reorganization recovery and testnet end-to-end payment processing have not yet been verified; do not use this version to process real payments.
+Keep database backups and `APP_ENCRYPTION_KEY` in separate protected storage. Before accepting real payments, make a test payment on every network you enable and keep confirmation counts conservative; transfers removed by a chain reorganization are not rolled back automatically.
