@@ -1,183 +1,350 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { buildPaymentUri } from './payment-uri.js';
+import { BrandLockup, CoinIcon, OrbitMark } from '@orbitt/ui';
+import { buildPaymentUri, toBaseUnits } from './payment-uri.js';
+import { format, formatFiat, t } from './i18n.js';
 
 type Status = 'created' | 'awaiting_payment' | 'detected' | 'confirming' | 'paid' | 'underpaid' | 'overpaid' | 'expired' | 'late_payment' | 'cancelled';
 
-interface PublicInvoice {
+interface PaymentOption {
+  asset: string;
+  network: string;
+  name: string;
+  network_name: string;
+  decimals: number;
+  contract: string | null;
+}
+
+export interface PublicInvoice {
   id: string;
   merchant_name: string;
   order_id: string | null;
   request_amount: string;
   request_currency: string;
-  crypto_amount: string;
-  crypto_amount_base_units: string;
-  asset: string;
-  network: string;
+  crypto_amount: string | null;
+  crypto_amount_base_units: string | null;
+  asset: string | null;
+  asset_name: string | null;
+  asset_decimals: number | null;
+  network: string | null;
+  network_name: string | null;
+  token_contract: string | null;
   address: string | null;
+  address_mode: 'derived' | 'shared';
+  received_amount: string;
+  remaining_amount: string;
   status: Status;
   created_at: string;
   expires_at: string;
   success_url: string | null;
   cancel_url: string | null;
+  payment_options: PaymentOption[];
 }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
-const POLL_MS = 5_000;
+const IN_PROGRESS: readonly Status[] = ['awaiting_payment', 'detected', 'confirming', 'underpaid', 'overpaid'];
 
-function formatTime(seconds: number): string {
-  const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
-  const remainder = (seconds % 60).toString().padStart(2, '0');
-  return `${minutes}:${remainder}`;
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, { ...init, headers: { accept: 'application/json', ...(init?.body ? { 'content-type': 'application/json' } : {}) } });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(body.error?.message ?? `Request failed (${response.status})`);
+  }
+  return response.json() as Promise<T>;
 }
 
-function statusText(status: Status): string {
-  const labels: Record<Status, string> = {
-    created: 'Preparing payment', awaiting_payment: 'Waiting for payment', detected: 'Payment detected',
-    confirming: 'Confirming payment', paid: 'Payment complete', underpaid: 'Payment is short',
-    overpaid: 'Payment exceeds amount', expired: 'Invoice expired', late_payment: 'Late payment received',
-    cancelled: 'Invoice cancelled',
+function secondsUntil(iso: string): number {
+  return Math.max(0, Math.ceil((new Date(iso).getTime() - Date.now()) / 1000));
+}
+
+function clock(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+  const rest = (seconds % 60).toString().padStart(2, '0');
+  return hours ? `${hours}:${minutes}:${rest}` : `${minutes}:${rest}`;
+}
+
+function Icon({ name }: { name: 'copy' | 'check' | 'lock' | 'wallet' | 'back' | 'chevron' | 'alert' | 'clock' }) {
+  const paths: Record<typeof name, ReactElement> = {
+    copy: <><rect x="7" y="7" width="9.5" height="9.5" rx="2" /><path d="M13 4.5V4a1.8 1.8 0 0 0-1.8-1.8H4A1.8 1.8 0 0 0 2.2 4v7.2A1.8 1.8 0 0 0 4 13h.5" /></>,
+    check: <path d="m4 10.2 3.8 3.7L16 5.8" />,
+    lock: <><rect x="3.6" y="8.3" width="12.8" height="9" rx="2.2" /><path d="M6.4 8.3V6.2a3.6 3.6 0 0 1 7.2 0v2.1" /></>,
+    wallet: <><rect x="2.5" y="5" width="15" height="11.5" rx="2.4" /><path d="M2.5 8.5h15M13.5 12.2h1" /></>,
+    back: <path d="M12.5 4 6.5 10l6 6" />,
+    chevron: <path d="m7.5 4.5 5.5 5.5-5.5 5.5" />,
+    alert: <><path d="M10 6.5v4.5M10 13.8v.2" /><circle cx="10" cy="10" r="7.6" /></>,
+    clock: <><circle cx="10" cy="10" r="7.6" /><path d="M10 5.8V10l2.8 1.8" /></>,
   };
-  return labels[status];
+  return <svg className="icon" viewBox="0 0 20 20" aria-hidden="true">{paths[name]}</svg>;
 }
 
-function statusTone(status: Status): string {
-  if (status === 'paid') return 'success';
-  if (status === 'expired' || status === 'cancelled' || status === 'late_payment') return 'muted';
-  if (status === 'underpaid' || status === 'overpaid') return 'warning';
-  return 'active';
-}
-
-function Icon({ name }: { name: 'copy' | 'check' | 'lock' | 'orbit' }) {
-  if (name === 'orbit') return <span className="orbit-mark" aria-hidden="true"><i /></span>;
-  if (name === 'lock') return <svg aria-hidden="true" viewBox="0 0 18 18"><rect x="3.2" y="7.4" width="11.6" height="8" rx="2" /><path d="M5.7 7.4V5.6a3.3 3.3 0 0 1 6.6 0v1.8M9 10.3v2.2" /></svg>;
-  if (name === 'check') return <svg aria-hidden="true" viewBox="0 0 18 18"><path d="m3.7 9.2 3.5 3.4 7.1-7.2" /></svg>;
-  return <svg aria-hidden="true" viewBox="0 0 18 18"><rect x="6.3" y="6.3" width="8" height="8" rx="1.5" /><path d="M11.7 4.4V3.8a1.5 1.5 0 0 0-1.5-1.5H3.8a1.5 1.5 0 0 0-1.5 1.5v6.4a1.5 1.5 0 0 0 1.5 1.5h.7" /></svg>;
-}
-
-function Brand() {
-  return <div className="brand"><Icon name="orbit" /><span className="brand-word">ORBITT <b>PAY</b></span></div>;
-}
-
-function CheckoutCard({ invoice, onRefresh }: { invoice: PublicInvoice; onRefresh: () => void }) {
-  const [secondsLeft, setSecondsLeft] = useState(() => Math.max(0, Math.ceil((new Date(invoice.expires_at).getTime() - Date.now()) / 1000)));
-  const [copied, setCopied] = useState<'address' | 'amount' | null>(null);
-  const [canceling, setCanceling] = useState(false);
-  const [cancelError, setCancelError] = useState('');
-  const closed = ['paid', 'expired', 'late_payment', 'cancelled'].includes(invoice.status);
-  const isCountdown = !closed && secondsLeft > 0;
-  const visibleStatus = secondsLeft === 0 && !closed && ['created', 'awaiting_payment'].includes(invoice.status) ? 'expired' : invoice.status;
-  const progress = Math.max(0, Math.min(1, secondsLeft / Math.max(1, (new Date(invoice.expires_at).getTime() - new Date(invoice.created_at).getTime()) / 1000)));
-  const paymentUri = useMemo(() => invoice.address ? buildPaymentUri({
-    asset: invoice.asset, network: invoice.network, address: invoice.address,
-    amount: invoice.crypto_amount, baseUnits: invoice.crypto_amount_base_units,
-  }) : '', [invoice]);
-  const canCancel = invoice.status === 'created' || invoice.status === 'awaiting_payment';
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setSecondsLeft(Math.max(0, Math.ceil((new Date(invoice.expires_at).getTime() - Date.now()) / 1000))), 1_000);
-    return () => window.clearInterval(timer);
-  }, [invoice.expires_at]);
-
-  const copy = async (value: string, field: 'address' | 'amount') => {
+function useCopy() {
+  const [copied, setCopied] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const copy = async (value: string, key: string) => {
     try {
       await navigator.clipboard.writeText(value);
-      setCopied(field);
-      window.setTimeout(() => setCopied(null), 1_800);
+      setCopied(key);
+      setError('');
+      window.setTimeout(() => setCopied((current) => current === key ? null : current), 1_600);
     } catch {
-      setCancelError('Copy is unavailable in this browser. Select and copy the value manually.');
+      setError(t.copyUnavailable);
     }
   };
+  return { copied, error, copy };
+}
 
-  const cancel = async () => {
-    setCanceling(true);
-    setCancelError('');
+function useCountdown(expiresAt: string): number {
+  const [seconds, setSeconds] = useState(() => secondsUntil(expiresAt));
+  useEffect(() => {
+    setSeconds(secondsUntil(expiresAt));
+    const timer = window.setInterval(() => setSeconds(secondsUntil(expiresAt)), 1_000);
+    return () => window.clearInterval(timer);
+  }, [expiresAt]);
+  return seconds;
+}
+
+function Header({ invoice, status }: { invoice: PublicInvoice; status: Status }) {
+  const tone = status === 'paid' ? 'success' : ['underpaid', 'overpaid', 'late_payment'].includes(status) ? 'warning' : ['expired', 'cancelled'].includes(status) ? 'muted' : 'active';
+  return (
+    <header className="card-header">
+      <div className="merchant">
+        <span className="merchant-avatar" aria-hidden="true">{invoice.merchant_name.slice(0, 1).toUpperCase()}</span>
+        <div className="merchant-text">
+          <p className="eyebrow">{t.paying}</p>
+          <h1>{invoice.merchant_name}</h1>
+          <div className="merchant-meta">
+            <span className={`status-pill ${tone}`}><span className="status-dot" />{t.status[status]}</span>
+            {invoice.order_id && <span className="order">{t.order} {invoice.order_id}</span>}
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+interface AssetGroup { asset: string; name: string; options: PaymentOption[] }
+
+function CoinPicker({ invoice, onSelected }: { invoice: PublicInvoice; onSelected: (next: PublicInvoice) => void }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const groups = useMemo(() => {
+    const map = new Map<string, AssetGroup>();
+    for (const option of invoice.payment_options) {
+      const group = map.get(option.asset) ?? { asset: option.asset, name: option.name, options: [] };
+      group.options.push(option);
+      map.set(option.asset, group);
+    }
+    return [...map.values()];
+  }, [invoice.payment_options]);
+
+  const choose = async (option: PaymentOption) => {
+    const key = `${option.asset}:${option.network}`;
+    setBusy(key);
+    setError('');
     try {
-      const response = await fetch(`${API_BASE}/v1/public/invoices/${invoice.id}/cancel`, { method: 'POST' });
-      if (!response.ok) {
-        const body = await response.json() as { error?: { message?: string } };
-        throw new Error(body.error?.message ?? 'The invoice could not be cancelled.');
-      }
-      if (invoice.cancel_url) window.location.assign(invoice.cancel_url);
-      else onRefresh();
-    } catch (error) {
-      setCancelError(error instanceof Error ? error.message : 'The invoice could not be cancelled.');
-    } finally {
-      setCanceling(false);
+      onSelected(await request<PublicInvoice>(`/v1/public/invoices/${invoice.id}/payment`, { method: 'POST', body: JSON.stringify({ asset: option.asset, network: option.network }) }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The payment method could not be selected.');
+      setBusy(null);
     }
   };
-
-  const stage = invoice.status === 'paid' ? 3 : ['confirming'].includes(invoice.status) ? 2 : ['detected', 'underpaid', 'overpaid'].includes(invoice.status) ? 1 : 0;
-  const amountTitle = invoice.crypto_amount;
 
   return (
-    <article className="checkout-card" aria-live="polite">
-      <header className="merchant-header">
-        <div>
-          <p className="merchant-label">Paying</p>
-          <h1>{invoice.merchant_name}</h1>
-          {invoice.order_id && <p className="order-reference">Order {invoice.order_id}</p>}
-        </div>
-        <div className={`status-pill ${statusTone(visibleStatus)}`}><span className="status-dot" />{statusText(visibleStatus)}</div>
-      </header>
+    <>
+      <section className="total">
+        <p className="eyebrow">{t.orderTotal}</p>
+        <p className="total-amount">{formatFiat(invoice.request_amount, invoice.request_currency)}</p>
+      </section>
+      <section className="picker" aria-label={t.chooseTitle}>
+        <h2>{t.chooseTitle}</h2>
+        <p className="hint">{t.chooseHint}</p>
+        {!groups.length && <p className="notice">{t.noOptions}</p>}
+        <ul className="coin-list">
+          {groups.map((group) => {
+            const single = group.options.length === 1 ? group.options[0]! : null;
+            const expanded = open === group.asset;
+            return (
+              <li key={group.asset} className={`coin-row${expanded ? ' is-open' : ''}`}>
+                <button
+                  className="coin-button"
+                  disabled={busy !== null}
+                  aria-expanded={single ? undefined : expanded}
+                  onClick={() => single ? void choose(single) : setOpen(expanded ? null : group.asset)}
+                >
+                  <CoinIcon asset={group.asset} network={single?.network ?? null} size={38} />
+                  <span className="coin-text">
+                    <strong>{group.name}</strong>
+                    <span>{group.asset}{single ? ` · ${single.network_name}` : ` · ${group.options.length} ${t.networks}`}</span>
+                  </span>
+                  {busy?.startsWith(`${group.asset}:`) ? <span className="spinner" /> : <span className={`chevron${expanded ? ' is-open' : ''}`}><Icon name="chevron" /></span>}
+                </button>
+                {!single && expanded && (
+                  <div className="network-options" role="group" aria-label={t.selectNetwork}>
+                    {group.options.map((option) => (
+                      <button key={option.network} className="network-chip" disabled={busy !== null} onClick={() => void choose(option)}>
+                        <CoinIcon asset={group.asset} network={option.network} size={22} />
+                        {option.network_name}
+                        {busy === `${option.asset}:${option.network}` && <span className="spinner small" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        {busy && <p className="preparing" role="status"><OrbitMark size={18} spinning />{t.preparing}</p>}
+        {error && <p className="inline-error" role="alert">{error}</p>}
+      </section>
+    </>
+  );
+}
 
-      <section className="amount-section" aria-label="Payment amount">
-        <div className="amount-heading">
+function qrLogo(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><circle cx="24" cy="24" r="24" fill="#fff"/><defs><linearGradient id="g" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#4ab4f8"/></linearGradient></defs><path d="M40.94 22.52A17 17 0 1 1 28.4 7.58" fill="none" stroke="url(#g)" stroke-width="4.4" stroke-linecap="round"/><circle cx="37.02" cy="13.07" r="3.7" fill="#3f9df0"/></svg>`;
+  return `data:image/svg+xml;base64,${btoa(svg)}`;
+}
+
+function PaymentCard({ invoice, onRefresh }: { invoice: PublicInvoice; onRefresh: () => void }) {
+  const seconds = useCountdown(invoice.expires_at);
+  const { copied, error: copyError, copy } = useCopy();
+  const [cancelling, setCancelling] = useState(false);
+  const [error, setError] = useState('');
+  const totalSeconds = useRef(Math.max(1, secondsUntil(invoice.expires_at)));
+  const partial = invoice.status === 'underpaid';
+  const amount = partial ? invoice.remaining_amount : invoice.crypto_amount!;
+  const asset = invoice.asset!;
+  const waiting = invoice.status === 'awaiting_payment' || partial;
+  const timedOut = waiting && seconds === 0;
+  const status: Status = timedOut ? 'expired' : invoice.status;
+  const uri = useMemo(() => {
+    if (!invoice.address || invoice.asset_decimals === null) return '';
+    return buildPaymentUri({
+      asset, network: invoice.network!, address: invoice.address, amount,
+      baseUnits: toBaseUnits(amount, invoice.asset_decimals), tokenContract: invoice.token_contract,
+    });
+  }, [invoice, amount, asset]);
+  const deepLink = /^[a-z]+:/.test(uri) ? uri : null;
+  const stage = invoice.status === 'paid' ? 3 : invoice.status === 'confirming' || invoice.status === 'overpaid' ? 2 : ['detected', 'underpaid'].includes(invoice.status) ? 1 : 0;
+  const canCancel = invoice.status === 'awaiting_payment' && invoice.received_amount === '0' && !timedOut;
+
+  const cancel = async () => {
+    setCancelling(true);
+    setError('');
+    try {
+      await request(`/v1/public/invoices/${invoice.id}/cancel`, { method: 'POST' });
+      if (invoice.cancel_url) window.location.assign(invoice.cancel_url);
+      else onRefresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The payment could not be cancelled.');
+      setCancelling(false);
+    }
+  };
+
+  return (
+    <>
+      <Header invoice={invoice} status={status} />
+      <section className="amount-block" aria-label={t.amount}>
+        <div className="amount-main">
+          <CoinIcon asset={asset} network={invoice.network} size={44} />
           <div>
-            <p className="small-label">Send exactly</p>
-            <div className="crypto-amount">{amountTitle}<span>{invoice.asset}</span></div>
-            <p className="fiat-reference">Order total {invoice.request_amount} {invoice.request_currency}</p>
-          </div>
-          <div className={`countdown ${!isCountdown ? 'countdown-ended' : ''}`} aria-label={isCountdown ? `${formatTime(secondsLeft)} remaining` : 'Payment window ended'}>
-            <svg viewBox="0 0 50 50" role="img" aria-hidden="true">
-              <defs><linearGradient id="countdown-gradient"><stop stopColor="#7b5cfa" /><stop offset="1" stopColor="#4aa8f5" /></linearGradient></defs>
-              <circle className="countdown-track" cx="25" cy="25" r="21" />
-              <circle className="countdown-progress" cx="25" cy="25" r="21" style={{ strokeDashoffset: `${132 * (1 - progress)}` }} />
-            </svg>
-            <span>{isCountdown ? formatTime(secondsLeft) : '—'}</span>
+            <p className="eyebrow">{partial ? t.sendRemaining : t.sendExactly}</p>
+            <p className="crypto-amount"><span className="value">{amount}</span> <span className="ticker">{asset}</span></p>
+            <p className="fiat">{t.orderTotal} {formatFiat(invoice.request_amount, invoice.request_currency)} · {invoice.network_name}</p>
           </div>
         </div>
-        <button className="copy-row amount-copy" onClick={() => void copy(amountTitle, 'amount')}>
-          <span>Exact amount</span><strong>{amountTitle} {invoice.asset}</strong>
-          <span className="copy-action"><Icon name={copied === 'amount' ? 'check' : 'copy'} />{copied === 'amount' ? 'Copied' : 'Copy'}</span>
-        </button>
-      </section>
-
-      <section className="qr-section" aria-label="Scan to pay">
-        {invoice.address ? <div className="qr-frame"><QRCodeSVG value={paymentUri} size={218} level="M" bgColor="#ffffff" fgColor="#080b14" title={`Payment QR code for ${invoice.crypto_amount} ${invoice.asset}`} /></div>
-          : <div className="qr-unavailable">Payment address is being prepared</div>}
-        <p className="qr-caption">Scan with your wallet</p>
-      </section>
-
-      <section className="address-section" aria-label="Receiving address">
-        <div className="section-heading"><h2>Payment address</h2><span>{invoice.network}</span></div>
-        <div className="address-value" tabIndex={0} aria-label="Full receiving address">{invoice.address ?? 'Address unavailable'}</div>
-        <button className="copy-row address-copy" disabled={!invoice.address} onClick={() => invoice.address && void copy(invoice.address, 'address')}>
-          <span className="copy-action"><Icon name={copied === 'address' ? 'check' : 'copy'} />{copied === 'address' ? 'Copied' : 'Copy address'}</span>
-          <span className="wallet-lock"><Icon name="lock" />Your funds go directly to the merchant</span>
-        </button>
-      </section>
-
-      <div className="network-warning"><span aria-hidden="true">!</span><p>Send only on <strong>{invoice.network}</strong>. Transfers from another network may not be recoverable.</p></div>
-
-      <section className="status-timeline" aria-label="Payment progress">
-        {['Waiting', 'Detected', 'Confirming', 'Paid'].map((label, index) => (
-          <div className={`timeline-step ${index <= stage ? 'is-active' : ''} ${invoice.status === 'paid' && index === 3 ? 'is-complete' : ''}`} key={label}>
-            <span className="timeline-dot">{invoice.status === 'paid' && index === 3 ? <Icon name="check" /> : null}</span><span>{label}</span>
+        {waiting && (
+          <div className={`countdown${seconds < 120 ? ' is-low' : ''}`} role="timer" aria-label={`${t.timeLeft} ${clock(seconds)}`}>
+            <svg viewBox="0 0 44 44" aria-hidden="true">
+              <circle className="track" cx="22" cy="22" r="19" />
+              <circle className="progress" cx="22" cy="22" r="19" pathLength="100" style={{ strokeDashoffset: 100 - Math.min(100, (seconds / totalSeconds.current) * 100) }} />
+            </svg>
+            <span>{clock(seconds)}</span>
           </div>
-        ))}
+        )}
       </section>
 
-      {invoice.status === 'expired' && <p className="notice-text">This quote has expired. Contact the shop if you already sent a payment.</p>}
-      {secondsLeft === 0 && !closed && <p className="notice-text">This quote has expired. Contact the shop if you already sent a payment.</p>}
-      {invoice.status === 'underpaid' && <p className="notice-text">A payment was detected below the quoted amount. The shop is checking the transfer.</p>}
-      {invoice.status === 'overpaid' && <p className="notice-text">The payment was above the quoted amount. The shop will review the surplus.</p>}
-      {invoice.status === 'late_payment' && <p className="notice-text">A payment arrived after this invoice expired. Contact the shop to resolve it.</p>}
-      {invoice.status === 'paid' && invoice.success_url && <a className="continue-button" href={invoice.success_url}>Continue to {invoice.merchant_name}</a>}
-      {canCancel && <button className="cancel-link" disabled={canceling} onClick={() => void cancel()}>{canceling ? 'Cancelling…' : 'Cancel payment'}</button>}
-      {cancelError && <p className="inline-error" role="alert">{cancelError}</p>}
-      <p className="auto-refresh"><span className="refresh-pulse" />Status updates automatically</p>
-    </article>
+      {timedOut ? <p className="notice">{t.expiredText}</p> : (
+        <>
+          <section className="qr-block">
+            <div className="qr-frame">
+              {uri && <QRCodeSVG value={uri} size={208} level="H" marginSize={0} bgColor="#ffffff" fgColor="#0a0d18" imageSettings={{ src: qrLogo(), height: 40, width: 40, excavate: true }} title={`${amount} ${asset}`} />}
+            </div>
+            <p className="caption">{t.scanWithWallet}</p>
+            {deepLink && <a className="wallet-button" href={deepLink}><Icon name="wallet" />{t.openWallet}</a>}
+          </section>
+
+          <section className="fields">
+            <button className="field" onClick={() => void copy(amount, 'amount')}>
+              <span className="field-label">{t.amount}</span>
+              <span className="field-value mono">{amount} {asset}</span>
+              <span className={`field-action${copied === 'amount' ? ' is-done' : ''}`}><Icon name={copied === 'amount' ? 'check' : 'copy'} />{copied === 'amount' ? t.copied : t.copy}</span>
+            </button>
+            <button className="field" onClick={() => invoice.address && void copy(invoice.address, 'address')}>
+              <span className="field-label">{t.address}</span>
+              <span className="field-value mono address">{invoice.address}</span>
+              <span className={`field-action${copied === 'address' ? ' is-done' : ''}`}><Icon name={copied === 'address' ? 'check' : 'copy'} />{copied === 'address' ? t.copied : t.copy}</span>
+            </button>
+          </section>
+
+          <div className="warning"><Icon name="alert" /><p>{format(t.sendOnlyOn, { asset, network: invoice.network_name ?? invoice.network ?? '' })}{invoice.address_mode === 'shared' ? ` ${t.sharedAddressNote}` : ''}</p></div>
+        </>
+      )}
+
+      {partial && <p className="notice">{format(t.underpaidNotice, { received: invoice.received_amount, remaining: invoice.remaining_amount, asset })}</p>}
+      {invoice.status === 'overpaid' && <p className="notice">{t.overpaidNotice}</p>}
+      {['detected', 'confirming'].includes(invoice.status) && <p className="notice calm">{t.confirmingNotice}</p>}
+
+      <ol className="timeline" aria-label="Payment progress">
+        {t.steps.map((label, index) => (
+          <li key={label} className={index <= stage ? 'is-active' : ''} aria-current={index === stage ? 'step' : undefined}>
+            <span className="dot" />{label}
+          </li>
+        ))}
+      </ol>
+
+      <footer className="card-footer">
+        <span className="secure"><Icon name="lock" />{t.directToMerchant}</span>
+        {canCancel && <button className="link-button" disabled={cancelling} onClick={() => void cancel()}>{cancelling ? t.cancelling : t.cancel}</button>}
+      </footer>
+      {(error || copyError) && <p className="inline-error" role="alert">{error || copyError}</p>}
+    </>
+  );
+}
+
+function ResultCard({ invoice }: { invoice: PublicInvoice }) {
+  const paid = invoice.status === 'paid';
+  const title = paid ? t.paidTitle : invoice.status === 'late_payment' ? t.lateTitle : invoice.status === 'cancelled' ? t.cancelledTitle : t.expiredTitle;
+  const text = paid ? format(t.paidText, { merchant: invoice.merchant_name }) : invoice.status === 'late_payment' ? t.lateText : invoice.status === 'cancelled' ? t.cancelledText : t.expiredText;
+  const target = paid ? invoice.success_url : invoice.cancel_url;
+  useEffect(() => {
+    if (!paid || !invoice.success_url) return;
+    const timer = window.setTimeout(() => window.location.assign(invoice.success_url!), 6_000);
+    return () => window.clearTimeout(timer);
+  }, [paid, invoice.success_url]);
+  return (
+    <>
+      <Header invoice={invoice} status={invoice.status} />
+      <section className={`result ${paid ? 'is-paid' : 'is-closed'}`}>
+        <div className="result-mark" aria-hidden="true">
+          {paid
+            ? <svg viewBox="0 0 64 64"><circle className="ring" cx="32" cy="32" r="29" /><path className="tick" d="m19 33 9 9 18-19" /></svg>
+            : <Icon name={invoice.status === 'late_payment' ? 'alert' : 'clock'} />}
+        </div>
+        <h2>{title}</h2>
+        <p>{text}</p>
+        {paid && invoice.crypto_amount && (
+          <dl className="receipt">
+            <div><dt>{t.amount}</dt><dd className="mono">{invoice.received_amount} {invoice.asset}</dd></div>
+            <div><dt>{t.orderTotal}</dt><dd>{formatFiat(invoice.request_amount, invoice.request_currency)}</dd></div>
+            {invoice.order_id && <div><dt>{t.order}</dt><dd>{invoice.order_id}</dd></div>}
+          </dl>
+        )}
+        {target && <a className="primary-button" href={target}>{paid ? format(t.continue, { merchant: invoice.merchant_name }) : t.backToShop}</a>}
+      </section>
+    </>
   );
 }
 
@@ -188,37 +355,59 @@ export function Checkout() {
   const [error, setError] = useState('');
 
   const refresh = useCallback(async () => {
-    if (!invoiceId) { setError('This checkout link is invalid.'); setLoading(false); return; }
+    if (!invoiceId) { setError(t.invalidLink); setLoading(false); return; }
     try {
-      const response = await fetch(`${API_BASE}/v1/public/invoices/${invoiceId}`, { headers: { accept: 'application/json' } });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({})) as { error?: { message?: string } };
-        throw new Error(body.error?.message ?? 'This invoice could not be loaded.');
-      }
-      const nextInvoice = await response.json() as PublicInvoice;
-      setInvoice(nextInvoice);
+      setInvoice(await request<PublicInvoice>(`/v1/public/invoices/${invoiceId}`));
       setError('');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'This invoice could not be loaded.');
+      setError(cause instanceof Error ? cause.message : 'This payment could not be loaded.');
     } finally {
       setLoading(false);
     }
   }, [invoiceId]);
 
+  const status = invoice?.status;
   useEffect(() => {
     void refresh();
-    const poll = window.setInterval(() => void refresh(), POLL_MS);
-    return () => window.clearInterval(poll);
   }, [refresh]);
+  useEffect(() => {
+    if (status && !IN_PROGRESS.includes(status) && status !== 'created') return;
+    const poll = window.setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, status === 'created' ? 20_000 : 4_000);
+    const onVisible = () => { if (document.visibilityState === 'visible') void refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { window.clearInterval(poll); document.removeEventListener('visibilitychange', onVisible); };
+  }, [refresh, status]);
+
+  useEffect(() => {
+    if (invoice) document.title = `${t.status[invoice.status]} · ${invoice.merchant_name}`;
+  }, [invoice]);
 
   return (
-    <main className="checkout-page">
-      <div className="ambient-glow" aria-hidden="true" />
-      <header className="page-brand"><Brand /><span className="secure-label"><Icon name="lock" />Secure checkout</span></header>
-      {loading && <section className="checkout-card loading-card" aria-label="Loading invoice"><span className="loading-ring" /><p>Loading your payment details…</p></section>}
-      {!loading && error && <section className="checkout-card error-card" role="alert"><span className="error-mark">!</span><h1>Checkout unavailable</h1><p>{error}</p><button className="retry-button" onClick={() => { setLoading(true); void refresh(); }}>Try again</button></section>}
-      {!loading && !error && invoice && <CheckoutCard invoice={invoice} onRefresh={() => void refresh()} />}
-      <footer className="page-footer"><span>Payments for every chain</span><span>Powered by <strong>ORBITT PAY</strong></span></footer>
+    <main className="page">
+      <div className="backdrop" aria-hidden="true"><span className="planet" /><span className="orbit one" /><span className="orbit two" /></div>
+      <header className="topbar">
+        <BrandLockup markSize={26} wordSize={13} />
+        <span className="secure-label"><Icon name="lock" />{t.secureCheckout}</span>
+      </header>
+      <article className="card" aria-live="polite" aria-busy={loading}>
+        {loading && <div className="state"><OrbitMark size={44} spinning /><p>{t.loading}</p></div>}
+        {!loading && error && (
+          <div className="state" role="alert">
+            <span className="state-icon"><Icon name="alert" /></span>
+            <h1>{t.unavailable}</h1>
+            <p>{error}</p>
+            <button className="secondary-button" onClick={() => { setLoading(true); void refresh(); }}>{t.retry}</button>
+          </div>
+        )}
+        {!loading && !error && invoice && (
+          invoice.status === 'created'
+            ? <><Header invoice={invoice} status="created" /><CoinPicker invoice={invoice} onSelected={setInvoice} /></>
+            : IN_PROGRESS.includes(invoice.status) ? <PaymentCard invoice={invoice} onRefresh={() => void refresh()} />
+              : <ResultCard invoice={invoice} />
+        )}
+      </article>
+      {invoice && IN_PROGRESS.includes(invoice.status) && <p className="live"><span className="pulse" />{t.live}</p>}
+      <footer className="page-footer"><span>{t.tagline}</span><span>{t.poweredBy} <strong>ORBITT PAY</strong></span></footer>
     </main>
   );
 }

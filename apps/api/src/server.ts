@@ -41,6 +41,7 @@ export interface PublicInvoiceRecord {
   crypto_amount_base_units: string | null;
   asset: string | null;
   asset_name: string | null;
+  asset_decimals: number | null;
   network: string | null;
   network_name: string | null;
   token_contract: string | null;
@@ -295,7 +296,7 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
       id: { type: 'string', format: 'uuid' }, merchant_name: { type: 'string' }, order_id: nullableString,
       request_amount: { type: 'string' }, request_currency: { type: 'string' },
       crypto_amount: nullableString, crypto_amount_base_units: nullableString,
-      asset: nullableString, asset_name: nullableString, network: nullableString, network_name: nullableString,
+      asset: nullableString, asset_name: nullableString, asset_decimals: { type: ['integer', 'null'] }, network: nullableString, network_name: nullableString,
       token_contract: nullableString, address: nullableString, address_mode: { type: 'string', enum: ['derived', 'shared'] },
       received_amount: { type: 'string' }, remaining_amount: { type: 'string' },
       status: { type: 'string', enum: invoiceStatuses },

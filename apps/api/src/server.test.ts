@@ -78,7 +78,7 @@ describe('merchant API', () => {
     const services = mockServices();
     services.getPublicInvoice = async (id) => ({
       id, merchant_name: merchant.name, order_id: null, request_amount: '25.00', request_currency: 'EUR', crypto_amount: '0.00025', crypto_amount_base_units: '25000',
-      asset: 'BTC', asset_name: 'Bitcoin', network: 'bitcoin', network_name: 'Bitcoin', token_contract: null, address: 'bc1qexample', address_mode: 'derived',
+      asset: 'BTC', asset_name: 'Bitcoin', asset_decimals: 8, network: 'bitcoin', network_name: 'Bitcoin', token_contract: null, address: 'bc1qexample', address_mode: 'derived',
       received_amount: '0', remaining_amount: '0.00025', status: 'awaiting_payment',
       created_at: invoice.created_at, expires_at: invoice.expires_at, success_url: null, cancel_url: null, payment_options: [],
     });

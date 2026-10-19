@@ -1,0 +1,44 @@
+/* ORBITT PAY design tokens, sampled from the brand banner. */
+:root {
+  --ob-bg: #04050c;
+  --ob-bg-raised: #070912;
+  --ob-surface: #0b0f1a;
+  --ob-surface-2: #121829;
+  --ob-surface-3: #182036;
+  --ob-border: rgba(255, 255, 255, .08);
+  --ob-border-strong: rgba(255, 255, 255, .14);
+  --ob-text: #f5f7ff;
+  --ob-text-2: #c4c9da;
+  --ob-muted: #8a90a8;
+  --ob-faint: #5d6378;
+  --ob-violet: #7b5cfa;
+  --ob-blue: #4aa8f5;
+  --ob-gradient: linear-gradient(100deg, #7b5cfa 0%, #4aa8f5 100%);
+  --ob-success: #34d399;
+  --ob-warning: #fbbf24;
+  --ob-danger: #f87171;
+  --ob-radius-lg: 22px;
+  --ob-radius: 14px;
+  --ob-radius-sm: 10px;
+  --ob-ease: cubic-bezier(.2, .8, .2, 1);
+  --ob-font: "SF Pro Text", -apple-system, BlinkMacSystemFont, Inter, "Segoe UI", Roboto, sans-serif;
+  --ob-font-display: "SF Pro Display", -apple-system, BlinkMacSystemFont, Inter, "Segoe UI", Roboto, sans-serif;
+  --ob-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.ob-lockup { display: inline-flex; align-items: center; gap: 10px; }
+.ob-wordmark { font-family: var(--ob-font-display); font-weight: 600; letter-spacing: .16em; color: var(--ob-text); white-space: nowrap; }
+.ob-wordmark b { font-weight: 600; background: var(--ob-gradient); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.ob-orbit-mark { display: block; flex-shrink: 0; overflow: visible; }
+.ob-orbit-mark.is-spinning .ob-orbit-ring { transform-origin: 24px 24px; animation: ob-orbit 2.4s linear infinite; }
+
+.ob-coin {
+  position: relative; display: inline-grid; flex-shrink: 0; place-items: center; border-radius: 50%;
+  color: #fff; font-family: var(--ob-font-display); font-weight: 700; letter-spacing: -.02em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), 0 4px 14px rgba(0, 0, 0, .25);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+}
+.ob-coin-network { position: absolute; right: -2px; bottom: -2px; width: 38%; height: 38%; border: 2px solid var(--ob-surface); border-radius: 50%; }
+
+@keyframes ob-orbit { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ob-orbit-mark.is-spinning .ob-orbit-ring { animation: none; } }

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@orbitt/ui": "*",
     "lucide-react": "1.59.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"

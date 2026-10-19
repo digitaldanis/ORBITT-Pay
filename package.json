@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Self-hosted, non-custodial crypto payment processing for online shops.",
   "engines": {
-    "node": ">=22 <23"
+    "node": ">=22"
   },
   "packageManager": "npm@11.16.0",
   "workspaces": [

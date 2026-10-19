@@ -360,6 +360,7 @@ export class PostgresApiServices implements ApiServices {
       crypto_amount_base_units: row.crypto_amount_base_units,
       asset: row.asset,
       asset_name: asset?.name ?? null,
+      asset_decimals: asset?.decimals ?? null,
       network: row.network,
       network_name: asset?.networkName ?? null,
       token_contract: asset?.contract ?? null,
