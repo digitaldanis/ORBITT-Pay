@@ -94,7 +94,11 @@ export class EvmWatcher {
     }
   }
 
-  async scanBlockRange(fromBlock: bigint, toBlock: bigint, receivingAddresses: readonly string[]): Promise<ChainTransfer[]> {
+  /**
+   * Finds native and token transfers to `receivingAddresses` in a block range. Pass
+   * `native: false` when only token invoices are open to skip fetching full blocks.
+   */
+  async scanBlockRange(fromBlock: bigint, toBlock: bigint, receivingAddresses: readonly string[], options: { native?: boolean } = {}): Promise<ChainTransfer[]> {
     if (fromBlock < 0n || toBlock < fromBlock) throw new RangeError('invalid block range');
     if (toBlock - fromBlock + 1n > this.maxBlocksPerScan) throw new RangeError('block range exceeds the configured scan limit');
     const addresses = new Map<string, string>();
@@ -105,7 +109,7 @@ export class EvmWatcher {
     if (addresses.size === 0) return [];
 
     const transfers: ChainTransfer[] = [];
-    for (let blockNumber = fromBlock; blockNumber <= toBlock; blockNumber += 1n) {
+    for (let blockNumber = fromBlock; options.native !== false && blockNumber <= toBlock; blockNumber += 1n) {
       const blockTag = `0x${blockNumber.toString(16)}`;
       const { result: block, endpoint: blockSource } = await this.rpcWithEndpoint<RpcBlock | null>('eth_getBlockByNumber', [blockTag, true]);
       if (!block) continue;

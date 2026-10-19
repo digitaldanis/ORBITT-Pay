@@ -28,7 +28,9 @@ interface TronBlockResponse {
 
 interface TronNativeTransaction {
   txID: string;
-  block_number: number;
+  /** TronGrid v1 returns `blockNumber`; some mirrors use `block_number`. */
+  blockNumber?: number;
+  block_number?: number;
   block_timestamp: number;
   ret?: Array<{ contractRet?: string }>;
   raw_data?: {
@@ -41,9 +43,10 @@ interface TronNativeTransaction {
 
 interface TronTokenTransaction {
   transaction_id: string;
-  block_number: number;
+  /** TronGrid's TRC-20 history has no block height; records are solidified when only_confirmed=true. */
+  block_number?: number;
   block_timestamp: number;
-  contract_address: string;
+  contract_address?: string;
   to: string;
   type: string;
   value: string;
@@ -263,7 +266,8 @@ function parseNativeTransfer(
   headBlock: bigint,
   now: Date,
 ): ChainTransfer | null {
-  if (!TXID.test(transaction.txID) || !Number.isSafeInteger(transaction.block_number) || transaction.block_number < 0) {
+  const height = transaction.blockNumber ?? transaction.block_number;
+  if (!TXID.test(transaction.txID) || !Number.isSafeInteger(height) || height! < 0) {
     throw new TypeError('TRON returned an invalid native transaction');
   }
   const contract = transaction.raw_data?.contract?.[0];
@@ -276,7 +280,7 @@ function parseNativeTransfer(
   if (typeof amount !== 'string' || !/^\d+$/.test(amount) || BigInt(amount) <= 0n) {
     throw new TypeError('TRON returned an invalid native amount');
   }
-  const blockNumber = BigInt(transaction.block_number);
+  const blockNumber = BigInt(height!);
   return {
     transactionId: transaction.txID,
     asset: 'TRX',
@@ -297,14 +301,15 @@ function parseTokenTransfer(
   headBlock: bigint,
   now: Date,
 ): ChainTransfer | null {
-  if (!TXID.test(transaction.transaction_id) || !Number.isSafeInteger(transaction.block_number) || transaction.block_number < 0) {
+  if (!TXID.test(transaction.transaction_id) || !Number.isSafeInteger(transaction.block_timestamp)
+    || (transaction.block_number !== undefined && (!Number.isSafeInteger(transaction.block_number) || transaction.block_number < 0))) {
     throw new TypeError('TRON returned an invalid TRC-20 transaction');
   }
   if (transaction.success === false || transaction.type !== 'Transfer' || transaction.to !== address) return null;
   const contractAddress = transaction.contract_address ?? transaction.token_info?.address;
   if (!contractAddress || contractAddress.toLowerCase() !== token.contractAddress.toLowerCase()) return null;
   if (!/^\d+$/.test(transaction.value) || BigInt(transaction.value) <= 0n) throw new TypeError('TRON returned an invalid TRC-20 amount');
-  const blockNumber = BigInt(transaction.block_number);
+  const blockNumber = transaction.block_number === undefined ? null : BigInt(transaction.block_number);
   return {
     transactionId: transaction.transaction_id,
     asset: token.asset,
@@ -312,7 +317,8 @@ function parseTokenTransfer(
     address,
     amountBaseUnits: BigInt(transaction.value),
     blockNumber,
-    confirmations: blockNumber <= headBlock ? headBlock - blockNumber + 1n : 0n,
+    // Only solidified history is requested, so a record without a height is already irreversible.
+    confirmations: blockNumber === null ? 1n : blockNumber <= headBlock ? headBlock - blockNumber + 1n : 0n,
     observedAt: Number.isSafeInteger(transaction.block_timestamp) ? new Date(transaction.block_timestamp) : now,
   };
 }

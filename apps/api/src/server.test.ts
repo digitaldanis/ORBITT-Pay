@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildServer, type ApiServices, type InvoiceRecord, type MerchantContext } from './server.js';
+import { ApiError, buildServer, type ApiServices, type InvoiceRecord, type MerchantContext } from './server.js';
 import { hashApiKey } from './auth/api-key.js';
 
 const secret = `ob_live_${'x'.repeat(43)}`;
@@ -8,7 +8,8 @@ const invoice: InvoiceRecord = {
   id: '0b9678da-f39f-4b3f-a74e-624eaa36d8bd', order_id: null, amount: '25.00', currency: 'EUR',
   crypto_amount: '0.00025', asset: 'BTC', network: 'bitcoin', address: 'bc1qexample', status: 'awaiting_payment',
   checkout_url: 'https://pay.example.test/i/0b9678da-f39f-4b3f-a74e-624eaa36d8bd',
-  expires_at: '2026-10-19T11:00:00.000Z', created_at: '2026-10-19T10:45:00.000Z', metadata: {},
+  received_amount: '0', surplus_amount: '0', exchange_rate: '100000',
+  expires_at: '2026-10-19T11:00:00.000Z', created_at: '2026-10-19T10:45:00.000Z', updated_at: '2026-10-19T10:45:00.000Z', metadata: {},
 };
 
 function mockServices(): ApiServices {
@@ -16,11 +17,16 @@ function mockServices(): ApiServices {
     authenticateKey: async (hash) => hash === hashApiKey(secret) ? merchant : null,
     createInvoice: async () => invoice,
     getInvoice: async () => invoice,
+    getInvoiceDetail: async () => ({ invoice, payments: [], webhooks: [] }),
     getPublicInvoice: async () => null,
+    selectPublicPayment: async () => null,
     cancelPublicInvoice: async () => null,
     listInvoices: async () => ({ data: [invoice], next_cursor: null }),
     cancelInvoice: async () => invoice,
-    getAssets: async () => [{ asset: 'BTC', network: 'bitcoin', enabled: true }],
+    getAssets: async () => [{ asset: 'BTC', network: 'bitcoin', name: 'Bitcoin', network_name: 'Bitcoin', decimals: 8, contract: null, wallet_asset: 'BTC', address_mode: 'derived', enabled: true, available: true }],
+    getNetworkStatus: async () => [],
+    deleteWallet: async () => true,
+    redeliverWebhook: async () => true,
     getAccount: async () => ({ merchant: merchant.name }),
     updateWallets: async () => ({ updated: true }),
     setWebhook: async (_merchant, url) => ({ webhook_url: url }),
@@ -72,8 +78,9 @@ describe('merchant API', () => {
     const services = mockServices();
     services.getPublicInvoice = async (id) => ({
       id, merchant_name: merchant.name, order_id: null, request_amount: '25.00', request_currency: 'EUR', crypto_amount: '0.00025', crypto_amount_base_units: '25000',
-      asset: 'BTC', network: 'bitcoin', address: 'bc1qexample', status: 'awaiting_payment',
-      created_at: invoice.created_at, expires_at: invoice.expires_at, success_url: null, cancel_url: null,
+      asset: 'BTC', asset_name: 'Bitcoin', network: 'bitcoin', network_name: 'Bitcoin', token_contract: null, address: 'bc1qexample', address_mode: 'derived',
+      received_amount: '0', remaining_amount: '0.00025', status: 'awaiting_payment',
+      created_at: invoice.created_at, expires_at: invoice.expires_at, success_url: null, cancel_url: null, payment_options: [],
     });
     const app = await buildServer(services, { logger: false });
     const response = await app.inject({ method: 'GET', url: `/v1/public/invoices/${invoice.id}` });
@@ -108,6 +115,46 @@ describe('merchant API', () => {
     expect(blocked.statusCode).toBe(403);
     const logout = await app.inject({ method: 'POST', url: '/v1/dashboard/logout', headers: { cookie: `${sessionCookie}; ${csrfCookie}`, 'x-csrf-token': csrfToken } });
     expect(logout.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('lets checkout choose a payment method without an API key and validates the body', async () => {
+    const services = mockServices();
+    let chosen: string[] = [];
+    services.selectPublicPayment = async (id, asset, network) => {
+      chosen = [id, asset, network];
+      return null;
+    };
+    const app = await buildServer(services, { logger: false });
+    const missing = await app.inject({ method: 'POST', url: `/v1/public/invoices/${invoice.id}/payment`, payload: { asset: 'USDT', network: 'tron' } });
+    expect(missing.statusCode).toBe(404);
+    expect(chosen).toEqual([invoice.id, 'USDT', 'tron']);
+    const invalid = await app.inject({ method: 'POST', url: `/v1/public/invoices/${invoice.id}/payment`, payload: { asset: 'USDT' } });
+    expect(invalid.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it('maps service errors to the standard error envelope', async () => {
+    const services = mockServices();
+    services.cancelInvoice = async () => { throw new ApiError(409, 'invoice_not_cancellable', 'Only unpaid invoices can be cancelled.'); };
+    const app = await buildServer(services, { logger: false });
+    const response = await app.inject({ method: 'POST', url: `/v1/invoices/${invoice.id}/cancel`, headers: { authorization: `Bearer ${secret}` } });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: { code: 'invoice_not_cancellable', message: 'Only unpaid invoices can be cancelled.' } });
+    await app.close();
+  });
+
+  it('validates dashboard wallet bodies instead of passing arbitrary JSON through', async () => {
+    const services = mockServices();
+    const sessionToken = 'session_token_abcdefghijklmnopqrstuvwxyz';
+    const csrfToken = 'csrf_token_abcdefghijklmnopqrstuvwxyz';
+    services.authenticateDashboardSession = async () => ({ merchant, email: 'owner@example.test', csrfHash: hashApiKey(csrfToken) });
+    const app = await buildServer(services, { logger: false });
+    const headers = { cookie: `ob_session=${sessionToken}; ob_csrf=${csrfToken}`, 'x-csrf-token': csrfToken };
+    const invalid = await app.inject({ method: 'PUT', url: '/v1/dashboard/account/wallets', headers, payload: { wallets: 'nope' } });
+    expect(invalid.statusCode).toBe(400);
+    const valid = await app.inject({ method: 'PUT', url: '/v1/dashboard/account/wallets', headers, payload: { wallets: [{ asset: 'BTC', network: 'bitcoin', extended_public_key: 'zpub' }] } });
+    expect(valid.statusCode).toBe(200);
     await app.close();
   });
 });

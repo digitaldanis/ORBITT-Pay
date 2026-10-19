@@ -43,14 +43,21 @@ function isPrivateAddress(address: string): boolean {
     || normalized.startsWith('fd') || /^fe[89ab]/.test(normalized) || normalized.startsWith('ff');
 }
 
+/** Local development only: lets webhooks reach a shop running on localhost or a private network. */
+function allowPrivateTargets(): boolean {
+  return process.env.WEBHOOK_ALLOW_PRIVATE_TARGETS === 'true' && process.env.NODE_ENV !== 'production';
+}
+
 async function validateTarget(target: string): Promise<void> {
   const url = new URL(target);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('invalid_webhook_url');
   if (process.env.NODE_ENV === 'production' && url.protocol !== 'https:') throw new Error('webhook_https_required');
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) throw new Error('private_webhook_target');
+  if (!allowPrivateTargets() && (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local'))) throw new Error('private_webhook_target');
   const addresses = isIP(hostname) ? [{ address: hostname }] : await lookup(hostname, { all: true, verbatim: true });
-  if (addresses.length === 0 || addresses.some(({ address }) => isPrivateAddress(address))) throw new Error('private_webhook_target');
+  if (addresses.length === 0) throw new Error('private_webhook_target');
+  if (allowPrivateTargets()) return;
+  if (addresses.some(({ address }) => isPrivateAddress(address))) throw new Error('private_webhook_target');
 }
 
 export class WebhookWorker {

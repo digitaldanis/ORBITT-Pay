@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "build": "npm run typecheck && npm run build --workspace packages/sdk-js && npm run build --workspace apps/checkout && npm run build --workspace apps/dashboard",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc --noEmit -p tests/tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"

@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { resolvePaymentStatus } from './chain-scanner.js';
+import { resolvePaymentStatus, transferIsEligible, type OpenInvoice } from './chain-scanner.js';
 
-const invoice = (status: 'awaiting_payment' | 'cancelled' = 'awaiting_payment') => ({
-  id: 'invoice-1', merchant_id: 'merchant-1', order_id: 'order-1', request_amount: '1.00',
-  request_currency: 'EUR', crypto_amount: '0.01', crypto_amount_base_units: '1000',
+const invoice = (status: OpenInvoice['status'] = 'awaiting_payment'): OpenInvoice => ({
+  id: 'invoice-1', merchant_id: 'merchant-1', crypto_amount_base_units: '1000',
   received_amount_base_units: '0', surplus_base_units: '0', asset: 'BTC', network: 'bitcoin',
-  address: 'bc1qexample', status, expires_at: new Date('2026-10-20T00:00:00.000Z'),
-  created_at: new Date('2026-10-19T00:00:00.000Z'), metadata: {},
+  address: 'bc1qexample', address_mode: 'derived', status, expires_at: new Date('2026-10-20T00:00:00.000Z'),
+  created_at: new Date('2026-10-19T00:00:00.000Z'), payment_selected_at: new Date('2026-10-19T12:00:00.000Z'),
+});
+
+const transfer = (observedAt: string, blockNumber: bigint | null = 100n) => ({
+  transactionId: 'tx', asset: 'BTC', network: 'bitcoin', address: 'bc1qexample', amountBaseUnits: 1000n,
+  blockNumber, confirmations: 1n, observedAt: new Date(observedAt),
 });
 
 describe('payment status from scanned transfers', () => {
@@ -24,5 +28,18 @@ describe('payment status from scanned transfers', () => {
 
   it('marks funds arriving after cancellation as late payment', () => {
     expect(resolvePaymentStatus(invoice('cancelled'), 1000n, true).status).toBe('late_payment');
+  });
+});
+
+describe('transfer eligibility', () => {
+  it('ignores confirmed history that predates the payment selection', () => {
+    expect(transferIsEligible(invoice(), transfer('2026-10-19T08:00:00.000Z'), 'utxo')).toBe(false);
+    expect(transferIsEligible(invoice(), transfer('2026-10-19T11:00:00.000Z'), 'utxo')).toBe(true);
+    expect(transferIsEligible(invoice(), transfer('2026-10-19T11:00:00.000Z'), 'tron')).toBe(false);
+  });
+
+  it('accepts freshly observed mempool transfers and EVM range scans', () => {
+    expect(transferIsEligible(invoice(), transfer(new Date().toISOString(), null), 'utxo')).toBe(true);
+    expect(transferIsEligible(invoice(), transfer('2020-01-01T00:00:00.000Z'), 'evm')).toBe(true);
   });
 });

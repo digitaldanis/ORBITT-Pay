@@ -11,7 +11,7 @@ function jsonResponse(body: unknown): Response {
 }
 
 describe('TRON watcher', () => {
-  it('reads confirmed TRX and TRC-20 transfers with solidified confirmations', async () => {
+  it('reads confirmed TRX and TRC-20 transfers in the TronGrid v1 format', async () => {
     const watcher = new TronWatcher({
       network: 'tron-nile',
       apiBases: ['https://tron.example'],
@@ -22,20 +22,20 @@ describe('TRON watcher', () => {
           return jsonResponse({ block_header: { raw_data: { number: 119 } } });
         }
         if (url.pathname.endsWith('/transactions/trc20')) {
+          // Real TronGrid TRC-20 records carry no block height and name the contract in token_info.
           return jsonResponse({ data: [{
             transaction_id: txid,
-            block_number: 100,
+            token_info: { symbol: 'USDT', address: tokenContract, decimals: 6, name: 'Tether USD' },
             block_timestamp: 1767225600000,
-            contract_address: tokenContract,
+            from: 'TVksTWs79stkKWEqKLYTdBjf4B3qZS7cZU',
             to: address,
             type: 'Transfer',
             value: '1200000',
-            success: true,
           }], meta: { page_size: 1 } });
         }
         return jsonResponse({ data: [{
           txID: txid,
-          block_number: 100,
+          blockNumber: 100,
           block_timestamp: 1767225600000,
           ret: [{ contractRet: 'SUCCESS' }],
           raw_data: { contract: [{ type: 'TransferContract', parameter: { value: { to_address: addressHex, amount: 5_000_000 } } }] },
@@ -46,7 +46,7 @@ describe('TRON watcher', () => {
     const result = await watcher.scanAddress(address, head);
     expect(result.transfers).toMatchObject([
       { asset: 'TRX', amountBaseUnits: 5_000_000n, confirmations: 20n },
-      { asset: 'USDT', amountBaseUnits: 1_200_000n, confirmations: 20n },
+      { asset: 'USDT', amountBaseUnits: 1_200_000n, confirmations: 1n, blockNumber: null, observedAt: new Date(1767225600000) },
     ]);
   });
 

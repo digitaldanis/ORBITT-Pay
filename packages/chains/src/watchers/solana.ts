@@ -17,6 +17,11 @@ export interface SolanaWatchTarget {
 export interface SolanaWatcherConfig {
   network: string;
   rpcUrls: readonly string[];
+  /**
+   * `finalized` (default) only reports transfers that can no longer be rolled back, so every
+   * reported transfer is final. `confirmed` reports faster but needs a later finality check.
+   */
+  commitment?: 'confirmed' | 'finalized';
   highValueThresholdsBaseUnits?: Readonly<Record<string, bigint>>;
   timeoutMs?: number;
   fetcher?: typeof fetch;
@@ -65,6 +70,7 @@ export class SolanaWatcher {
   private readonly fetcher: typeof fetch;
   private readonly timeoutMs: number;
   private readonly now: () => Date;
+  private readonly commitment: 'confirmed' | 'finalized';
   private requestId = 0;
 
   constructor(private readonly config: SolanaWatcherConfig) {
@@ -76,11 +82,23 @@ export class SolanaWatcher {
     this.fetcher = config.fetcher ?? fetch;
     this.timeoutMs = config.timeoutMs ?? 5_000;
     this.now = config.now ?? (() => new Date());
+    this.commitment = config.commitment ?? 'finalized';
   }
 
+  async getSlot(): Promise<bigint> {
+    const slot = await this.rpc<number>('getSlot', [{ commitment: this.commitment }]);
+    if (!Number.isSafeInteger(slot) || slot < 0) throw new TypeError('Solana RPC returned an invalid slot');
+    return BigInt(slot);
+  }
+
+  /**
+   * Reads new signatures per target since its saved cursor. Without a cursor, history older
+   * than `since` is not paged through, which keeps the first scan of a busy wallet cheap.
+   */
   async scanTargets(
     targets: readonly SolanaWatchTarget[],
     lastSeenSignatures: Readonly<Record<string, string>> = {},
+    since?: Date,
   ): Promise<SolanaScanResult> {
     const transfers: ChainTransfer[] = [];
     const nextCursors: Record<string, string> = {};
@@ -88,7 +106,7 @@ export class SolanaWatcher {
       validateTarget(target);
       const cursor = lastSeenSignatures[target.watchAddress];
       if (cursor !== undefined && !SIGNATURE.test(cursor)) throw new TypeError('saved Solana cursor is invalid');
-      const { signatures, nextCursor } = await this.getNewSignatures(target.watchAddress, cursor);
+      const { signatures, nextCursor } = await this.getNewSignatures(target.watchAddress, cursor, since);
       if (nextCursor) nextCursors[target.watchAddress] = nextCursor;
       for (const signature of signatures) {
         if (signature.err !== null) continue;
@@ -101,13 +119,15 @@ export class SolanaWatcher {
     return { transfers, nextCursors };
   }
 
-  private async getNewSignatures(address: string, cursor?: string): Promise<{ signatures: SignatureInfo[]; nextCursor: string | null }> {
+  private async getNewSignatures(address: string, cursor?: string, since?: Date): Promise<{ signatures: SignatureInfo[]; nextCursor: string | null }> {
     const signatures: SignatureInfo[] = [];
     let before: string | undefined;
     let cursorFound = cursor === undefined;
+    let reachedSince = false;
+    const sinceSeconds = since ? Math.floor(since.getTime() / 1000) : null;
     const maxPages = 20;
     for (let page = 0; page < maxPages; page += 1) {
-      const options: Record<string, unknown> = { limit: 1_000, commitment: 'confirmed' };
+      const options: Record<string, unknown> = { limit: 1_000, commitment: this.commitment };
       if (before) options.before = before;
       const batch = await this.rpc<SignatureInfo[]>('getSignaturesForAddress', [address, options]);
       if (!Array.isArray(batch)) throw new TypeError('Solana RPC returned invalid signature data');
@@ -119,9 +139,13 @@ export class SolanaWatcher {
           cursorFound = true;
           break;
         }
+        if (cursor === undefined && sinceSeconds !== null && item.blockTime !== null && item.blockTime < sinceSeconds) {
+          reachedSince = true;
+          break;
+        }
         signatures.push(item);
       }
-      if (cursorFound || batch.length < 1_000) break;
+      if (cursorFound || reachedSince || batch.length < 1_000) break;
       before = batch.at(-1)?.signature;
       if (!before) throw new TypeError('Solana RPC returned an invalid pagination cursor');
     }
@@ -131,7 +155,7 @@ export class SolanaWatcher {
 
   private async readTransfer(target: SolanaWatchTarget, signatureInfo: SignatureInfo): Promise<{ transfer: ChainTransfer; sourceEndpoint: string } | null> {
     const { result: transaction, endpoint } = await this.rpcWithEndpoint<SolanaTransaction | null>('getTransaction', [signatureInfo.signature, {
-      commitment: 'confirmed',
+      commitment: this.commitment,
       encoding: 'jsonParsed',
       maxSupportedTransactionVersion: 0,
     }]);
@@ -140,7 +164,7 @@ export class SolanaWatcher {
       ? nativeBalanceDelta(transaction, target.watchAddress)
       : splBalanceDelta(transaction, target);
     if (amount <= 0n) return null;
-    const finalized = signatureInfo.confirmationStatus === 'finalized';
+    const finalized = this.commitment === 'finalized' || signatureInfo.confirmationStatus === 'finalized';
     return {
       transfer: {
         transactionId: signatureInfo.signature,
@@ -170,7 +194,7 @@ export class SolanaWatcher {
       if (endpoint === primaryEndpoint) continue;
       try {
         independent = await this.rpcFrom<SolanaTransaction | null>(endpoint, 'getTransaction', [signature, {
-          commitment: 'confirmed', encoding: 'jsonParsed', maxSupportedTransactionVersion: 0,
+          commitment: this.commitment, encoding: 'jsonParsed', maxSupportedTransactionVersion: 0,
         }]);
         if (independent) break;
       } catch {

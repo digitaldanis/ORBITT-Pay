@@ -48,13 +48,15 @@ export const invoices = pgTable('invoices', {
   fiatCurrency: varchar('fiat_currency', { length: 3 }),
   rateUsed: text('rate_used'),
   rateTimestamp: timestamp('rate_timestamp', { withTimezone: true }),
-  cryptoAmountBaseUnits: text('crypto_amount_base_units').notNull(),
-  cryptoAmount: text('crypto_amount').notNull(),
+  cryptoAmountBaseUnits: text('crypto_amount_base_units'),
+  cryptoAmount: text('crypto_amount'),
   receivedAmountBaseUnits: text('received_amount_base_units').notNull().default('0'),
   surplusBaseUnits: text('surplus_base_units').notNull().default('0'),
-  asset: varchar('asset', { length: 32 }).notNull(),
-  network: varchar('network', { length: 48 }).notNull(),
+  asset: varchar('asset', { length: 32 }),
+  network: varchar('network', { length: 48 }),
   address: text('address'),
+  addressMode: varchar('address_mode', { length: 16 }).notNull().default('derived'),
+  paymentSelectedAt: timestamp('payment_selected_at', { withTimezone: true }),
   derivationPath: text('derivation_path'),
   successUrl: text('success_url'),
   cancelUrl: text('cancel_url'),
@@ -67,7 +69,10 @@ export const invoices = pgTable('invoices', {
 }, (table) => ({
   addressStatusIndex: uniqueIndex('invoices_open_address_unique')
     .on(table.address, table.asset, table.network)
-    .where(sql`${table.address} IS NOT NULL AND ${table.status} IN ('created', 'awaiting_payment', 'detected', 'confirming', 'underpaid', 'overpaid')`),
+    .where(sql`${table.address} IS NOT NULL AND ${table.addressMode} = 'derived' AND ${table.status} IN ('created', 'awaiting_payment', 'detected', 'confirming', 'underpaid', 'overpaid')`),
+  sharedAmountIndex: uniqueIndex('invoices_open_shared_amount_unique')
+    .on(table.address, table.asset, table.network, table.cryptoAmountBaseUnits)
+    .where(sql`${table.address} IS NOT NULL AND ${table.addressMode} = 'shared' AND ${table.status} IN ('created', 'awaiting_payment', 'detected', 'confirming', 'underpaid', 'overpaid')`),
 }));
 
 export const invoicePayments = pgTable('invoice_payments', {
@@ -88,6 +93,13 @@ export const invoicePayments = pgTable('invoice_payments', {
 export const chainScanCursors = pgTable('chain_scan_cursors', {
   network: varchar('network', { length: 48 }).primaryKey(),
   cursorBlock: bigint('cursor_block', { mode: 'bigint' }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const addressScanCursors = pgTable('address_scan_cursors', {
+  network: varchar('network', { length: 48 }).notNull(),
+  watchAddress: text('watch_address').notNull(),
+  cursor: text('cursor').notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
