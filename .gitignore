@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.next/
+.turbo/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
