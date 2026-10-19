@@ -8,17 +8,50 @@ export type InvoiceStatus = typeof invoiceStatuses[number];
 export interface Invoice {
   id: string;
   order_id: string | null;
+  /** Requested amount as a decimal string, in `currency`. */
   amount: string;
   currency: string;
-  crypto_amount: string;
-  asset: string;
-  network: string;
+  /** Exact crypto amount to send. Null until the customer picks a coin at checkout. */
+  crypto_amount: string | null;
+  asset: string | null;
+  network: string | null;
   address: string | null;
   status: InvoiceStatus;
   checkout_url: string;
+  /** Cumulative amount received on chain, in `asset`. */
+  received_amount: string;
+  /** Amount received beyond `crypto_amount`, in `asset`. */
+  surplus_amount: string;
+  /** Fiat price of one `asset` unit used for the quote, when priced in fiat. */
+  exchange_rate: string | null;
   expires_at: string;
   created_at: string;
+  updated_at: string;
   metadata: Record<string, unknown>;
+}
+
+export interface InvoicePayment {
+  transaction_id: string;
+  asset: string;
+  amount: string;
+  confirmations: string;
+  block_number: string | null;
+  observed_at: string;
+}
+
+export interface Asset {
+  asset: string;
+  network: string;
+  name: string;
+  network_name: string;
+  decimals: number;
+  contract: string | null;
+  wallet_asset: string;
+  family: 'utxo' | 'evm' | 'tron' | 'solana';
+  address_mode: 'derived' | 'shared';
+  enabled: boolean;
+  /** True when the merchant has a wallet for it and its network scanner is live. */
+  available: boolean;
 }
 
 export interface CreateInvoiceInput {
@@ -105,9 +138,10 @@ export class OrbittClient {
     return this.request<Invoice>(`/v1/invoices/${encodeURIComponent(id)}`);
   }
 
-  listInvoices(options: { status?: InvoiceStatus; limit?: number; cursor?: string } = {}): Promise<InvoiceList> {
+  listInvoices(options: { status?: InvoiceStatus; search?: string; limit?: number; cursor?: string } = {}): Promise<InvoiceList> {
     const query = new URLSearchParams();
     if (options.status) query.set('status', options.status);
+    if (options.search) query.set('search', options.search);
     if (options.limit !== undefined) query.set('limit', String(options.limit));
     if (options.cursor) query.set('cursor', options.cursor);
     const suffix = query.size ? `?${query.toString()}` : '';
@@ -118,8 +152,12 @@ export class OrbittClient {
     return this.request<Invoice>(`/v1/invoices/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
   }
 
-  listAssets(): Promise<Array<{ asset: string; network: string; enabled: boolean }>> {
-    return this.request('/v1/assets');
+  listPayments(id: string): Promise<InvoicePayment[]> {
+    return this.request<InvoicePayment[]>(`/v1/invoices/${encodeURIComponent(id)}/payments`);
+  }
+
+  listAssets(): Promise<Asset[]> {
+    return this.request<Asset[]>('/v1/assets');
   }
 
   sendTestWebhook(): Promise<{ accepted: boolean }> {
@@ -186,4 +224,23 @@ export async function verifyWebhookSignature(
     for (let i = 0; i < expected.length; i += 1) difference |= expected[i]! ^ candidate[i]!;
     return difference === 0;
   });
+}
+
+/**
+ * Verifies the signature and parses the event in one step. Throws when the signature is
+ * invalid or stale, so handlers never act on an unverified body.
+ */
+export async function constructWebhookEvent(
+  secret: string,
+  rawBody: string | Uint8Array,
+  signatureHeader: string,
+  options: { toleranceSeconds?: number; now?: number; crypto?: Crypto } = {},
+): Promise<WebhookEvent> {
+  if (!await verifyWebhookSignature(secret, rawBody, signatureHeader, options)) {
+    throw new Error('Invalid ORBITT-Signature header.');
+  }
+  const text = typeof rawBody === 'string' ? rawBody : new TextDecoder().decode(rawBody);
+  const event: unknown = JSON.parse(text);
+  if (!isRecord(event) || typeof event.event !== 'string') throw new Error('Webhook body is not an ORBITT PAY event.');
+  return event as unknown as WebhookEvent;
 }
