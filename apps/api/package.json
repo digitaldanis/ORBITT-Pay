@@ -16,6 +16,7 @@
     "@orbitt/chains": "*",
     "@orbitt/core": "*",
     "@orbitt/rates": "*",
+    "@orbitt/webhooks": "*",
     "dotenv": "16.6.1",
     "drizzle-orm": "^0.45.4",
     "fastify": "5.12.7",

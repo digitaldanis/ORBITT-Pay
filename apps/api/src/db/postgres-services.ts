@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { parseAccountPublicKey } from '@orbitt/chains';
+import { encryptSecret } from '@orbitt/webhooks';
 import { ApiError } from '../errors.js';
 import type { ApiServices, CreateInvoiceInput, InvoiceListQuery, InvoiceRecord, MerchantContext } from '../server.js';
 
@@ -54,6 +55,17 @@ function requestHash(input: CreateInvoiceInput): string {
   return createHash('sha256').update(canonical(input)).digest('hex');
 }
 
+function assertWebhookUrl(value: string): void {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new ApiError(400, 'invalid_webhook_url', 'Webhook URL must be a valid HTTP or HTTPS URL.', 'webhook_url'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    throw new ApiError(422, 'invalid_webhook_url', 'Webhook URL must use HTTP(S) and cannot include credentials.', 'webhook_url');
+  }
+  if (process.env.NODE_ENV === 'production' && url.protocol !== 'https:') {
+    throw new ApiError(422, 'https_required', 'HTTPS is required for webhook URLs in production.', 'webhook_url');
+  }
+}
+
 function toInvoice(row: InvoiceRow): InvoiceRecord {
   return {
     id: row.id,
@@ -77,7 +89,6 @@ export class PostgresApiServices implements ApiServices {
     private readonly pool: Pool,
     private readonly preparer: InvoicePreparer,
     private readonly enabledAssets: Array<{ asset: string; network: string; enabled: boolean }>,
-    private readonly testWebhook: (merchant: MerchantContext) => Promise<{ accepted: boolean }>,
   ) {}
 
   async authenticateKey(keyHash: string): Promise<MerchantContext | null> {
@@ -111,6 +122,14 @@ export class PostgresApiServices implements ApiServices {
       }
       if (row) await client.query('DELETE FROM idempotency_keys WHERE merchant_id = $1 AND key = $2', [merchant.id, idempotencyKey]);
 
+      const webhookSettings = await client.query<{ default_webhook_url: string | null; webhook_secret_ciphertext: string | null }>(
+        'SELECT default_webhook_url, webhook_secret_ciphertext FROM merchants WHERE id = $1', [merchant.id],
+      );
+      const webhookUrl = input.webhook_url ?? webhookSettings.rows[0]?.default_webhook_url ?? null;
+      const encryptedSecret = webhookSettings.rows[0]?.webhook_secret_ciphertext ?? null;
+      if (webhookUrl) assertWebhookUrl(webhookUrl);
+      if (webhookUrl && !encryptedSecret) throw new ApiError(422, 'webhook_secret_missing', 'Configure a webhook signing secret before setting an invoice webhook URL.', 'webhook_url');
+
       const prepared = await this.preparer.prepare(client, merchant, input);
       const insert = await client.query<InvoiceRow>(
         `INSERT INTO invoices (
@@ -126,6 +145,14 @@ export class PostgresApiServices implements ApiServices {
           prepared.webhookUrl, prepared.expiresAt, input.metadata ?? {}],
       );
       const invoice = toInvoice(insert.rows[0]!);
+      if (webhookUrl && encryptedSecret) {
+        const payload = { event: 'invoice.created', created_at: invoice.created_at, invoice };
+        await client.query(
+          `INSERT INTO webhook_deliveries (merchant_id, invoice_id, event_type, target_url, secret_ciphertext, payload)
+           VALUES ($1, $2, 'invoice.created', $3, $4, $5)`,
+          [merchant.id, invoice.id, webhookUrl, encryptedSecret, JSON.stringify(payload)],
+        );
+      }
       await client.query(
         `INSERT INTO idempotency_keys (merchant_id, key, request_hash, response, expires_at)
          VALUES ($1, $2, $3, $4, now() + interval '24 hours')`, [merchant.id, idempotencyKey, hash, JSON.stringify(invoice)],
@@ -190,7 +217,10 @@ export class PostgresApiServices implements ApiServices {
       `SELECT asset, network, extended_public_key, address, next_derivation_index
        FROM merchant_wallets WHERE merchant_id = $1 ORDER BY asset, network`, [merchant.id],
     );
-    return { merchant: { id: merchant.id, name: merchant.name }, wallets: result.rows.map((row) => ({
+    const webhook = await this.pool.query<{ default_webhook_url: string | null; secret_configured: boolean }>(
+      'SELECT default_webhook_url, webhook_secret_ciphertext IS NOT NULL AS secret_configured FROM merchants WHERE id = $1', [merchant.id],
+    );
+    return { merchant: { id: merchant.id, name: merchant.name }, webhook: { url: webhook.rows[0]?.default_webhook_url ?? null, secret_configured: webhook.rows[0]?.secret_configured ?? false }, wallets: result.rows.map((row) => ({
       asset: row.asset, network: row.network, configured: true,
       source: row.extended_public_key ? 'extended_public_key' : 'address',
       next_derivation_index: String(row.next_derivation_index),
@@ -243,7 +273,45 @@ export class PostgresApiServices implements ApiServices {
     }
   }
 
-  sendTestWebhook(merchant: MerchantContext) { return this.testWebhook(merchant); }
+  async setWebhook(merchant: MerchantContext, url: string | null, rotateSecret: boolean): Promise<{ webhook_url: string | null; signing_secret?: string }> {
+    if (url !== null) {
+      assertWebhookUrl(url);
+    }
+    const existing = await this.pool.query<{ webhook_secret_ciphertext: string | null }>(
+      'SELECT webhook_secret_ciphertext FROM merchants WHERE id = $1', [merchant.id],
+    );
+    if (!existing.rows[0]) throw new ApiError(404, 'account_not_found', 'Merchant account not found.');
+    let encryptedSecret = existing.rows[0].webhook_secret_ciphertext;
+    let signingSecret: string | undefined;
+    if (rotateSecret || (url !== null && !encryptedSecret)) {
+      const encryptionKey = process.env.APP_ENCRYPTION_KEY;
+      if (!encryptionKey) throw new ApiError(500, 'encryption_not_configured', 'Set APP_ENCRYPTION_KEY before configuring webhook signing.');
+      signingSecret = `whsec_${randomBytes(32).toString('base64url')}`;
+      encryptedSecret = encryptSecret(signingSecret, encryptionKey);
+    }
+    await this.pool.query(
+      'UPDATE merchants SET default_webhook_url = $2, webhook_secret_ciphertext = $3 WHERE id = $1',
+      [merchant.id, url, encryptedSecret],
+    );
+    return { webhook_url: url, ...(signingSecret ? { signing_secret: signingSecret } : {}) };
+  }
+
+  async sendTestWebhook(merchant: MerchantContext): Promise<{ accepted: boolean }> {
+    const settings = await this.pool.query<{ default_webhook_url: string | null; webhook_secret_ciphertext: string | null }>(
+      'SELECT default_webhook_url, webhook_secret_ciphertext FROM merchants WHERE id = $1', [merchant.id],
+    );
+    const config = settings.rows[0];
+    if (!config?.default_webhook_url || !config.webhook_secret_ciphertext) {
+      throw new ApiError(422, 'webhook_not_configured', 'Configure a webhook URL and signing secret before requesting a test event.');
+    }
+    const payload = { event: 'webhook.test', created_at: new Date().toISOString(), invoice: null };
+    await this.pool.query(
+      `INSERT INTO webhook_deliveries (merchant_id, event_type, target_url, secret_ciphertext, payload)
+       VALUES ($1, 'webhook.test', $2, $3, $4)`,
+      [merchant.id, config.default_webhook_url, config.webhook_secret_ciphertext, JSON.stringify(payload)],
+    );
+    return { accepted: true };
+  }
 
   private encodeCursor(row: InvoiceRow): string {
     return Buffer.from(`${row.created_at.toISOString()}|${row.id}`).toString('base64url');

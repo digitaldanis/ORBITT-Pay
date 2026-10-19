@@ -21,6 +21,7 @@ function mockServices(): ApiServices {
     getAssets: async () => [{ asset: 'BTC', network: 'bitcoin', enabled: true }],
     getAccount: async () => ({ merchant: merchant.name }),
     updateWallets: async () => ({ updated: true }),
+    setWebhook: async (_merchant, url) => ({ webhook_url: url }),
     sendTestWebhook: async () => ({ accepted: true }),
   };
 }

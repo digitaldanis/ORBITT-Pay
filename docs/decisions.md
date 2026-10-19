@@ -24,3 +24,4 @@ The repository starts as an npm workspace monorepo. Applications and packages ar
 - Queue and scheduling: pg-boss, using PostgreSQL to reduce infrastructure moving parts.
 - Exchange rates are expressed as fiat major units per one crypto unit; conversions divide fiat value by that rate and round the required base-unit amount upward.
 - Initial rate sources: CoinGecko Simple Price with Kraken public ticker fallback. Cache for 20 seconds and reject source data older than 120 seconds by default.
+- Webhook delivery: PostgreSQL outbox and `FOR UPDATE SKIP LOCKED` worker; signing secrets are encrypted at rest with AES-256-GCM under `APP_ENCRYPTION_KEY`, and each queued delivery retains its encrypted signing-key snapshot across rotations.

@@ -4,7 +4,6 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CoinGeckoProvider, KrakenProvider, RateService, type RateAssetConfig } from '@orbitt/rates';
 import { buildServer } from '../server.js';
-import { ApiError } from '../errors.js';
 import { createDatabasePool } from '../db/pool.js';
 import { PostgresApiServices } from '../db/postgres-services.js';
 import { PostgresInvoicePreparer, type EnabledAsset } from '../invoices/preparer.js';
@@ -24,7 +23,6 @@ const services = new PostgresApiServices(
   pool,
   new PostgresInvoicePreparer(assets, rates, expiry),
   assets.map(({ asset, network, enabled }) => ({ asset, network, enabled })),
-  async () => { throw new ApiError(422, 'webhook_not_configured', 'Configure a webhook URL before requesting a test event.'); },
 );
 
 const app = await buildServer(services);

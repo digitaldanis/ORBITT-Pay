@@ -23,6 +23,7 @@ The initial invoice preparer supports BTC and LTC receive derivation plus native
 | `GET` | `/v1/assets` | List enabled assets and networks |
 | `GET` | `/v1/account` | Read merchant settings |
 | `PUT` | `/v1/account/wallets` | Save public wallet configuration |
+| `PUT` | `/v1/account/webhook` | Set webhook URL or rotate its signing secret |
 | `POST` | `/v1/webhooks/test` | Request a test webhook |
 
 Invoice create accepts a decimal string `amount` and `currency`, with optional `asset`, `network`, `order_id`, `success_url`, `cancel_url`, `webhook_url`, and `metadata`. Unknown top-level fields are rejected. Reusing an idempotency key with a different request must return `409 idempotency_key_conflict`; the service implementation is responsible for persisting the request hash and response for 24 hours as specified by the API contract.
@@ -40,4 +41,4 @@ Content-Type: application/json
 {"amount":"49.95","currency":"EUR","asset":"BTC","network":"bitcoin","order_id":"1042"}
 ```
 
-The response includes the invoice ID, locked quote, checkout URL, status, and expiry. Keep the secret key on the merchant server; use the hosted checkout URL for the customer. Test-webhook delivery remains unavailable until the webhook dispatcher is configured.
+The response includes the invoice ID, locked quote, checkout URL, status, and expiry. Keep the secret key on the merchant server; use the hosted checkout URL for the customer. Webhook URL and signing-secret setup, delivery, and retry behavior are described in [docs/webhooks.md](./webhooks.md).

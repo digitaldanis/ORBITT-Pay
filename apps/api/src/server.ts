@@ -60,6 +60,7 @@ export interface ApiServices {
   getAssets(merchant: MerchantContext): Promise<Array<{ asset: string; network: string; enabled: boolean }>>;
   getAccount(merchant: MerchantContext): Promise<Record<string, unknown>>;
   updateWallets(merchant: MerchantContext, wallets: Array<{ asset: string; network: string; extended_public_key?: string; address?: string }>): Promise<Record<string, unknown>>;
+  setWebhook(merchant: MerchantContext, url: string | null, rotateSecret: boolean): Promise<{ webhook_url: string | null; signing_secret?: string }>;
   sendTestWebhook(merchant: MerchantContext): Promise<{ accepted: boolean }>;
 }
 
@@ -225,6 +226,14 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
       response: { 200: { type: 'object', additionalProperties: true }, 400: errorSchema, 401: errorSchema, 422: errorSchema },
     },
   }, async (request) => services.updateWallets(request.merchant!, request.body.wallets));
+
+  app.put<{ Body: { url: string | null; rotate_secret?: boolean } }>('/v1/account/webhook', {
+    schema: {
+      tags: ['account'], summary: 'Set the webhook endpoint or rotate its signing secret',
+      body: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: ['string', 'null'], format: 'uri', pattern: '^https?://', maxLength: 2048 }, rotate_secret: { type: 'boolean', default: false } } },
+      response: { 200: { type: 'object', required: ['webhook_url'], properties: { webhook_url: { type: ['string', 'null'] }, signing_secret: { type: 'string' } } }, 400: errorSchema, 401: errorSchema, 422: errorSchema, 500: errorSchema },
+    },
+  }, async (request) => services.setWebhook(request.merchant!, request.body.url, request.body.rotate_secret ?? false));
 
   app.post('/v1/webhooks/test', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, schema: { tags: ['webhooks'], summary: 'Send a test webhook', response: { 200: { type: 'object', required: ['accepted'], properties: { accepted: { type: 'boolean' } } }, 401: errorSchema, 422: errorSchema, 429: errorSchema, 500: errorSchema } } }, async (request) => services.sendTestWebhook(request.merchant!));
 

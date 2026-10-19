@@ -3,6 +3,7 @@ import {
 } from 'drizzle-orm';
 import {
   bigint,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -21,6 +22,8 @@ export const invoiceStatus = pgEnum('invoice_status', [
 export const merchants = pgTable('merchants', {
   id: uuid('id').defaultRandom().primaryKey(),
   name: varchar('name', { length: 160 }).notNull(),
+  defaultWebhookUrl: text('default_webhook_url'),
+  webhookSecretCiphertext: text('webhook_secret_ciphertext'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -91,4 +94,34 @@ export const merchantWallets = pgTable('merchant_wallets', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   merchantAssetNetworkUnique: uniqueIndex('merchant_wallets_merchant_asset_network_unique').on(table.merchantId, table.asset, table.network),
+}));
+
+export const webhookDeliveries = pgTable('webhook_deliveries', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  merchantId: uuid('merchant_id').notNull().references(() => merchants.id),
+  invoiceId: uuid('invoice_id').references(() => invoices.id),
+  eventType: varchar('event_type', { length: 80 }).notNull(),
+  targetUrl: text('target_url').notNull(),
+  secretCiphertext: text('secret_ciphertext').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+  status: varchar('status', { length: 16 }).notNull().default('pending'),
+  attempts: integer('attempts').notNull().default(0),
+  nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).defaultNow().notNull(),
+  lockedUntil: timestamp('locked_until', { withTimezone: true }),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  lastHttpStatus: integer('last_http_status'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const webhookDeliveryAttempts = pgTable('webhook_delivery_attempts', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  deliveryId: uuid('delivery_id').notNull().references(() => webhookDeliveries.id, { onDelete: 'cascade' }),
+  attemptNumber: integer('attempt_number').notNull(),
+  attemptedAt: timestamp('attempted_at', { withTimezone: true }).defaultNow().notNull(),
+  httpStatus: integer('http_status'),
+  responseExcerpt: text('response_excerpt'),
+  error: text('error'),
+}, (table) => ({
+  deliveryAttemptUnique: uniqueIndex('webhook_delivery_attempts_delivery_attempt_unique').on(table.deliveryId, table.attemptNumber),
 }));
