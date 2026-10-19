@@ -32,6 +32,24 @@ export interface InvoiceRecord {
   metadata: Record<string, unknown>;
 }
 
+export interface PublicInvoiceRecord {
+  id: string;
+  merchant_name: string;
+  order_id: string | null;
+  request_amount: string;
+  request_currency: string;
+  crypto_amount: string;
+  crypto_amount_base_units: string;
+  asset: string;
+  network: string;
+  address: string | null;
+  status: typeof invoiceStatuses[number];
+  created_at: string;
+  expires_at: string;
+  success_url: string | null;
+  cancel_url: string | null;
+}
+
 export interface CreateInvoiceInput {
   amount: string;
   currency: string;
@@ -55,6 +73,8 @@ export interface ApiServices {
   authenticateKey(keyHash: string): Promise<MerchantContext | null>;
   createInvoice(merchant: MerchantContext, idempotencyKey: string, input: CreateInvoiceInput): Promise<InvoiceRecord>;
   getInvoice(merchant: MerchantContext, id: string): Promise<InvoiceRecord | null>;
+  getPublicInvoice(id: string): Promise<PublicInvoiceRecord | null>;
+  cancelPublicInvoice(id: string): Promise<PublicInvoiceRecord | null>;
   listInvoices(merchant: MerchantContext, query: InvoiceListQuery): Promise<{ data: InvoiceRecord[]; next_cursor: string | null }>;
   cancelInvoice(merchant: MerchantContext, id: string): Promise<InvoiceRecord | null>;
   getAssets(merchant: MerchantContext): Promise<Array<{ asset: string; network: string; enabled: boolean }>>;
@@ -161,7 +181,8 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
   });
 
   app.addHook('preHandler', async (request, reply) => {
-    if (request.method === 'GET' && (request.url === '/health' || request.url.startsWith('/docs') || request.url === '/v1/openapi.json')) return;
+    if ((request.method === 'GET' && (request.url === '/health' || request.url.startsWith('/docs') || request.url === '/v1/openapi.json'))
+      || request.url.startsWith('/v1/public/invoices/')) return;
     const token = readBearerToken(request.headers.authorization);
     if (!token) return fail(reply, 401, 'unauthorized', 'A valid bearer API key is required.');
     try {
@@ -175,6 +196,35 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
   });
 
   app.get('/health', { schema: { tags: ['system'], response: { 200: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'] } } } }, async () => ({ status: 'ok' }));
+
+  const publicInvoiceSchema = {
+    type: 'object', additionalProperties: false,
+    required: ['id', 'merchant_name', 'request_amount', 'request_currency', 'crypto_amount', 'crypto_amount_base_units', 'asset', 'network', 'status', 'created_at', 'expires_at'],
+    properties: {
+      id: { type: 'string', format: 'uuid' }, merchant_name: { type: 'string' }, order_id: { type: ['string', 'null'] },
+      request_amount: { type: 'string' }, request_currency: { type: 'string' },
+      crypto_amount: { type: 'string' }, crypto_amount_base_units: { type: 'string' }, asset: { type: 'string' },
+      network: { type: 'string' }, address: { type: ['string', 'null'] }, status: { type: 'string', enum: invoiceStatuses },
+      created_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, success_url: { type: ['string', 'null'] }, cancel_url: { type: ['string', 'null'] },
+    },
+  } as const;
+  app.get<{ Params: { id: string } }>('/v1/public/invoices/:id', {
+    schema: { tags: ['checkout'], summary: 'Read public payment details for checkout', security: [], params: idParams, response: { 200: publicInvoiceSchema, 404: errorSchema, 429: errorSchema } },
+  }, async (request, reply) => {
+    const invoice = await services.getPublicInvoice(request.params.id);
+    return invoice ? reply.send(invoice) : fail(reply, 404, 'invoice_not_found', 'Invoice not found.');
+  });
+  app.post<{ Params: { id: string } }>('/v1/public/invoices/:id/cancel', {
+    schema: { tags: ['checkout'], summary: 'Cancel an unpaid checkout invoice', security: [], params: idParams, response: { 200: publicInvoiceSchema, 404: errorSchema, 409: errorSchema, 429: errorSchema } },
+  }, async (request, reply) => {
+    try {
+      const invoice = await services.cancelPublicInvoice(request.params.id);
+      return invoice ? reply.send(invoice) : fail(reply, 404, 'invoice_not_found', 'Invoice not found.');
+    } catch (error) {
+      if (error instanceof ApiError) return fail(reply, error.statusCode, error.code, error.message, error.param);
+      throw error;
+    }
+  });
 
   app.post<{ Body: CreateInvoiceInput }>('/v1/invoices', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },

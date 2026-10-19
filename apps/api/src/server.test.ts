@@ -16,6 +16,8 @@ function mockServices(): ApiServices {
     authenticateKey: async (hash) => hash === hashApiKey(secret) ? merchant : null,
     createInvoice: async () => invoice,
     getInvoice: async () => invoice,
+    getPublicInvoice: async () => null,
+    cancelPublicInvoice: async () => null,
     listInvoices: async () => ({ data: [invoice], next_cursor: null }),
     cancelInvoice: async () => invoice,
     getAssets: async () => [{ asset: 'BTC', network: 'bitcoin', enabled: true }],
@@ -55,6 +57,21 @@ describe('merchant API', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().openapi).toBe('3.1.0');
     expect(response.json().paths['/invoices']).toBeDefined();
+    await app.close();
+  });
+
+  it('serves a minimal public invoice view to the hosted checkout without an API key', async () => {
+    const services = mockServices();
+    services.getPublicInvoice = async (id) => ({
+      id, merchant_name: merchant.name, order_id: null, request_amount: '25.00', request_currency: 'EUR', crypto_amount: '0.00025', crypto_amount_base_units: '25000',
+      asset: 'BTC', network: 'bitcoin', address: 'bc1qexample', status: 'awaiting_payment',
+      created_at: invoice.created_at, expires_at: invoice.expires_at, success_url: null, cancel_url: null,
+    });
+    const app = await buildServer(services, { logger: false });
+    const response = await app.inject({ method: 'GET', url: `/v1/public/invoices/${invoice.id}` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().merchant_name).toBe(merchant.name);
+    expect(response.json().metadata).toBeUndefined();
     await app.close();
   });
 });

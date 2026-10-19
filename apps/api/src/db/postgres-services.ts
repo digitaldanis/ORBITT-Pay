@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import { parseAccountPublicKey } from '@orbitt/chains';
 import { encryptSecret } from '@orbitt/webhooks';
 import { ApiError } from '../errors.js';
-import type { ApiServices, CreateInvoiceInput, InvoiceListQuery, InvoiceRecord, MerchantContext } from '../server.js';
+import type { ApiServices, CreateInvoiceInput, InvoiceListQuery, InvoiceRecord, MerchantContext, PublicInvoiceRecord } from '../server.js';
 
 export interface PreparedInvoice {
   amount: string;
@@ -43,6 +43,24 @@ type InvoiceRow = {
   metadata: Record<string, unknown>;
 };
 
+type PublicInvoiceRow = {
+  id: string;
+  merchant_name: string;
+  order_id: string | null;
+  request_amount: string;
+  request_currency: string;
+  crypto_amount: string;
+  crypto_amount_base_units: string;
+  asset: string;
+  network: string;
+  address: string | null;
+  status: PublicInvoiceRecord['status'];
+  created_at: Date;
+  expires_at: Date;
+  success_url: string | null;
+  cancel_url: string | null;
+};
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value !== null && typeof value === 'object') {
@@ -77,10 +95,30 @@ function toInvoice(row: InvoiceRow): InvoiceRecord {
     network: row.network,
     address: row.address,
     status: row.status,
-    checkout_url: `${process.env.PUBLIC_BASE_URL ?? 'http://localhost:3000'}/checkout/${row.id}`,
+    checkout_url: `${process.env.CHECKOUT_BASE_URL ?? process.env.PUBLIC_BASE_URL ?? 'http://localhost:5173'}/checkout/${row.id}`,
     expires_at: row.expires_at.toISOString(),
     created_at: row.created_at.toISOString(),
     metadata: row.metadata ?? {},
+  };
+}
+
+function toPublicInvoice(row: PublicInvoiceRow): PublicInvoiceRecord {
+  return {
+    id: row.id,
+    merchant_name: row.merchant_name,
+    order_id: row.order_id,
+    request_amount: row.request_amount,
+    request_currency: row.request_currency,
+    crypto_amount: row.crypto_amount,
+    crypto_amount_base_units: row.crypto_amount_base_units,
+    asset: row.asset,
+    network: row.network,
+    address: row.address,
+    status: row.status,
+    created_at: row.created_at.toISOString(),
+    expires_at: row.expires_at.toISOString(),
+    success_url: row.success_url,
+    cancel_url: row.cancel_url,
   };
 }
 
@@ -145,14 +183,7 @@ export class PostgresApiServices implements ApiServices {
           prepared.webhookUrl, prepared.expiresAt, input.metadata ?? {}],
       );
       const invoice = toInvoice(insert.rows[0]!);
-      if (webhookUrl && encryptedSecret) {
-        const payload = { event: 'invoice.created', created_at: invoice.created_at, invoice };
-        await client.query(
-          `INSERT INTO webhook_deliveries (merchant_id, invoice_id, event_type, target_url, secret_ciphertext, payload)
-           VALUES ($1, $2, 'invoice.created', $3, $4, $5)`,
-          [merchant.id, invoice.id, webhookUrl, encryptedSecret, JSON.stringify(payload)],
-        );
-      }
+      await this.enqueueInvoiceEvent(client, merchant.id, invoice.id, 'invoice.created');
       await client.query(
         `INSERT INTO idempotency_keys (merchant_id, key, request_hash, response, expires_at)
          VALUES ($1, $2, $3, $4, now() + interval '24 hours')`, [merchant.id, idempotencyKey, hash, JSON.stringify(invoice)],
@@ -179,6 +210,47 @@ export class PostgresApiServices implements ApiServices {
     return result.rows[0] ? toInvoice(result.rows[0]) : null;
   }
 
+  async getPublicInvoice(id: string): Promise<PublicInvoiceRecord | null> {
+    const result = await this.pool.query<PublicInvoiceRow>(
+      `SELECT i.id, m.name AS merchant_name, i.order_id, i.request_amount, i.request_currency,
+       i.crypto_amount, i.crypto_amount_base_units, i.asset, i.network, i.address, i.status,
+       i.created_at, i.expires_at, i.success_url, i.cancel_url
+       FROM invoices i JOIN merchants m ON m.id = i.merchant_id WHERE i.id = $1`, [id],
+    );
+    return result.rows[0] ? toPublicInvoice(result.rows[0]) : null;
+  }
+
+  async cancelPublicInvoice(id: string): Promise<PublicInvoiceRecord | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const updated = await client.query<{ merchant_id: string }>(
+        `UPDATE invoices SET status = 'cancelled', updated_at = now()
+         WHERE id = $1 AND status IN ('created', 'awaiting_payment') RETURNING merchant_id`, [id],
+      );
+      if (updated.rows[0]) {
+        await this.enqueueInvoiceEvent(client, updated.rows[0].merchant_id, id, 'invoice.cancelled');
+        const selected = await client.query<PublicInvoiceRow>(
+          `SELECT i.id, m.name AS merchant_name, i.order_id, i.request_amount, i.request_currency,
+           i.crypto_amount, i.crypto_amount_base_units, i.asset, i.network, i.address, i.status,
+           i.created_at, i.expires_at, i.success_url, i.cancel_url
+           FROM invoices i JOIN merchants m ON m.id = i.merchant_id WHERE i.id = $1`, [id],
+        );
+        await client.query('COMMIT');
+        return selected.rows[0] ? toPublicInvoice(selected.rows[0]) : null;
+      }
+      const existing = await client.query('SELECT 1 FROM invoices WHERE id = $1', [id]);
+      await client.query('COMMIT');
+      if (existing.rowCount) throw new ApiError(409, 'invoice_not_cancellable', 'Only unpaid invoices can be cancelled.');
+      return null;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async listInvoices(merchant: MerchantContext, query: InvoiceListQuery): Promise<{ data: InvoiceRecord[]; next_cursor: string | null }> {
     const cursor = query.cursor ? this.decodeCursor(query.cursor) : null;
     const params: unknown[] = [merchant.id];
@@ -198,16 +270,30 @@ export class PostgresApiServices implements ApiServices {
   }
 
   async cancelInvoice(merchant: MerchantContext, id: string): Promise<InvoiceRecord | null> {
-    const result = await this.pool.query<InvoiceRow>(
-      `UPDATE invoices SET status = 'cancelled', updated_at = now()
-       WHERE merchant_id = $1 AND id = $2 AND status IN ('created', 'awaiting_payment')
-       RETURNING id, order_id, request_amount, request_currency, crypto_amount, asset, network,
-       address, status, expires_at, created_at, metadata`, [merchant.id, id],
-    );
-    if (result.rows[0]) return toInvoice(result.rows[0]);
-    const existing = await this.getInvoice(merchant, id);
-    if (existing) throw new ApiError(409, 'invoice_not_cancellable', 'Only unpaid invoices can be cancelled.');
-    return null;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query<InvoiceRow>(
+        `UPDATE invoices SET status = 'cancelled', updated_at = now()
+         WHERE merchant_id = $1 AND id = $2 AND status IN ('created', 'awaiting_payment')
+         RETURNING id, order_id, request_amount, request_currency, crypto_amount, asset, network,
+         address, status, expires_at, created_at, metadata`, [merchant.id, id],
+      );
+      if (result.rows[0]) {
+        await this.enqueueInvoiceEvent(client, merchant.id, id, 'invoice.cancelled');
+        await client.query('COMMIT');
+        return toInvoice(result.rows[0]);
+      }
+      const existing = await client.query('SELECT 1 FROM invoices WHERE merchant_id = $1 AND id = $2', [merchant.id, id]);
+      await client.query('COMMIT');
+      if (existing.rowCount) throw new ApiError(409, 'invoice_not_cancellable', 'Only unpaid invoices can be cancelled.');
+      return null;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getAssets() { return this.enabledAssets; }
@@ -311,6 +397,26 @@ export class PostgresApiServices implements ApiServices {
       [merchant.id, config.default_webhook_url, config.webhook_secret_ciphertext, JSON.stringify(payload)],
     );
     return { accepted: true };
+  }
+
+  private async enqueueInvoiceEvent(client: PoolClient, merchantId: string, invoiceId: string, eventType: string): Promise<void> {
+    const selected = await client.query<InvoiceRow & { webhook_url: string | null; default_webhook_url: string | null; webhook_secret_ciphertext: string | null }>(
+      `SELECT i.id, i.order_id, i.request_amount, i.request_currency, i.crypto_amount, i.asset, i.network,
+       i.address, i.status, i.expires_at, i.created_at, i.metadata, i.webhook_url,
+       m.default_webhook_url, m.webhook_secret_ciphertext
+       FROM invoices i JOIN merchants m ON m.id = i.merchant_id
+       WHERE i.merchant_id = $1 AND i.id = $2`, [merchantId, invoiceId],
+    );
+    const row = selected.rows[0];
+    const targetUrl = row?.webhook_url ?? row?.default_webhook_url ?? null;
+    if (!row || !targetUrl || !row.webhook_secret_ciphertext) return;
+    const invoice = toInvoice(row);
+    const payload = { event: eventType, created_at: new Date().toISOString(), invoice };
+    await client.query(
+      `INSERT INTO webhook_deliveries (merchant_id, invoice_id, event_type, target_url, secret_ciphertext, payload)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [merchantId, invoiceId, eventType, targetUrl, row.webhook_secret_ciphertext, JSON.stringify(payload)],
+    );
   }
 
   private encodeCursor(row: InvoiceRow): string {

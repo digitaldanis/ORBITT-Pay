@@ -20,6 +20,8 @@ The initial invoice preparer supports BTC and LTC receive derivation plus native
 | `GET` | `/v1/invoices/{id}` | Read one merchant invoice |
 | `GET` | `/v1/invoices` | List invoices with status and cursor filters |
 | `POST` | `/v1/invoices/{id}/cancel` | Cancel an unpaid invoice |
+| `GET` | `/v1/public/invoices/{id}` | Read safe public payment details for checkout |
+| `POST` | `/v1/public/invoices/{id}/cancel` | Cancel an unpaid checkout invoice |
 | `GET` | `/v1/assets` | List enabled assets and networks |
 | `GET` | `/v1/account` | Read merchant settings |
 | `PUT` | `/v1/account/wallets` | Save public wallet configuration |
