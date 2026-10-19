@@ -16,3 +16,10 @@ Authorship: W-Digital (hallo@w-digital.eu)
 ## Repository setup
 
 The repository starts as an npm workspace monorepo. Applications and packages are added as each milestone is implemented.
+
+## Core domain and persistence
+
+- API framework: Fastify, with schemas used to publish the OpenAPI contract.
+- Database: PostgreSQL with Drizzle ORM and SQL migrations.
+- Queue and scheduling: pg-boss, using PostgreSQL to reduce infrastructure moving parts.
+- Exchange rates are expressed as fiat major units per one crypto unit; conversions divide fiat value by that rate and round the required base-unit amount upward.
