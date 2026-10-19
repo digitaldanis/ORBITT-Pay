@@ -9,6 +9,17 @@ CREATE TABLE merchants (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE api_keys (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  merchant_id uuid NOT NULL REFERENCES merchants(id),
+  name varchar(120) NOT NULL,
+  key_hash varchar(64) NOT NULL UNIQUE,
+  key_prefix varchar(20) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz,
+  revoked_at timestamptz
+);
+
 CREATE TABLE invoices (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   merchant_id uuid NOT NULL REFERENCES merchants(id),

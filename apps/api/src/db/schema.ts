@@ -23,6 +23,17 @@ export const merchants = pgTable('merchants', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const apiKeys = pgTable('api_keys', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  merchantId: uuid('merchant_id').notNull().references(() => merchants.id),
+  name: varchar('name', { length: 120 }).notNull(),
+  keyHash: varchar('key_hash', { length: 64 }).notNull().unique(),
+  keyPrefix: varchar('key_prefix', { length: 20 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+});
+
 export const invoices = pgTable('invoices', {
   id: uuid('id').defaultRandom().primaryKey(),
   merchantId: uuid('merchant_id').notNull().references(() => merchants.id),
