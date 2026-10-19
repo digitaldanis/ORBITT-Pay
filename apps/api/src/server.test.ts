@@ -23,7 +23,7 @@ function mockServices(): ApiServices {
     cancelPublicInvoice: async () => null,
     listInvoices: async () => ({ data: [invoice], next_cursor: null }),
     cancelInvoice: async () => invoice,
-    getAssets: async () => [{ asset: 'BTC', network: 'bitcoin', name: 'Bitcoin', network_name: 'Bitcoin', decimals: 8, contract: null, wallet_asset: 'BTC', address_mode: 'derived', enabled: true, available: true }],
+    getAssets: async () => [{ asset: 'BTC', network: 'bitcoin', name: 'Bitcoin', network_name: 'Bitcoin', decimals: 8, contract: null, wallet_asset: 'BTC', family: 'utxo', address_mode: 'derived', enabled: true, available: true }],
     getNetworkStatus: async () => [],
     deleteWallet: async () => true,
     redeliverWebhook: async () => true,
@@ -62,6 +62,20 @@ describe('merchant API', () => {
     expect(receivedKey).toBe('cart-123');
     const invalid = await app.inject({ method: 'POST', url: '/v1/invoices', headers, payload: { amount: '25.00', currency: 'EUR', unexpected: true } });
     expect(invalid.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it('parses list query parameters sent as text', async () => {
+    let received: unknown;
+    const services = mockServices();
+    services.listInvoices = async (_merchant, query) => { received = query; return { data: [invoice], next_cursor: null }; };
+    const app = await buildServer(services, { logger: false });
+    const headers = { authorization: `Bearer ${secret}` };
+    const listed = await app.inject({ method: 'GET', url: '/v1/invoices?limit=50&status=paid&search=ORD', headers });
+    expect(listed.statusCode).toBe(200);
+    expect(received).toEqual({ limit: 50, status: 'paid', search: 'ORD' });
+    expect((await app.inject({ method: 'GET', url: '/v1/invoices?limit=101', headers })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/v1/invoices?limit=0', headers })).statusCode).toBe(400);
     await app.close();
   });
 

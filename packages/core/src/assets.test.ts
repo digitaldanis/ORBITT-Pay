@@ -28,4 +28,11 @@ describe('unique shared-address amounts', () => {
     expect(amount).toBe(1_003n);
     expect(() => pickUniqueAmount(1_000n, 2n, reserved, () => 0n)).toThrow(/no unique amount/);
   });
+
+  it('keeps offsets on the quote grid', () => {
+    const amount = pickUniqueAmount(1_000_000n, 99_999n, new Set([1_000_010n]), () => 0n, 10n);
+    expect(amount % 10n).toBe(0n);
+    expect(amount).toBe(1_000_020n);
+    expect(() => pickUniqueAmount(1_000n, 5n, new Set(), () => 0n, 10n)).toThrow(/at least one step/);
+  });
 });

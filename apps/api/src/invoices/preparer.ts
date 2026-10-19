@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { deriveEvmReceiveAddress, deriveTronReceiveAddress, deriveUtxoReceiveAddress } from '@orbitt/chains';
-import { decimalToBaseUnits, fiatToBaseUnits, formatBaseUnits, pickUniqueAmount } from '@orbitt/core';
+import { decimalToBaseUnits, fiatToBaseUnits, formatBaseUnits, pickUniqueAmount, quoteStep } from '@orbitt/core';
 import type { AddressMode, AssetDefinition } from '@orbitt/core';
 import type { RateService } from '@orbitt/rates';
 import { ApiError } from '../errors.js';
@@ -133,7 +133,7 @@ export class PostgresInvoicePreparer implements InvoicePreparer {
         throw new ApiError(422, 'rate_unavailable', 'A fresh exchange rate is unavailable for this quote.', 'currency');
       }
       try {
-        baseUnits = fiatToBaseUnits(request.amount, quote.rate, asset.decimals);
+        baseUnits = fiatToBaseUnits(request.amount, quote.rate, asset.decimals, quoteStep(asset.decimals));
       } catch (error) {
         throw new ApiError(400, 'invalid_amount', error instanceof Error ? error.message : 'Amount is invalid.', 'amount');
       }
@@ -168,7 +168,7 @@ export class PostgresInvoicePreparer implements InvoicePreparer {
         [address, asset.asset, asset.network],
       );
       try {
-        baseUnits = pickUniqueAmount(baseUnits, asset.maxOffsetBaseUnits, new Set(reserved.rows.map((row) => BigInt(row.amount))), randomBelow);
+        baseUnits = pickUniqueAmount(baseUnits, asset.maxOffsetBaseUnits, new Set(reserved.rows.map((row) => BigInt(row.amount))), randomBelow, quoteStep(asset.decimals));
       } catch {
         throw new ApiError(409, 'amount_slots_exhausted', 'Too many open invoices share this receiving address. Retry shortly.');
       }

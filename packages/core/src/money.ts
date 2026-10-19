@@ -21,21 +21,32 @@ function scaleFor(decimals: number): bigint {
   return 10n ** BigInt(decimals);
 }
 
+/** Customer-facing quotes never need more than 8 decimal places; longer tails only make amounts harder to check. */
+export const MAX_QUOTE_DECIMALS = 8;
+
+/** Granularity of quoted amounts in base units, e.g. 10^10 wei for an 18-decimal asset. */
+export function quoteStep(assetDecimals: number): bigint {
+  return assetDecimals > MAX_QUOTE_DECIMALS ? 10n ** BigInt(assetDecimals - MAX_QUOTE_DECIMALS) : 1n;
+}
+
 /**
  * Converts a fiat amount to the smallest crypto unit. `rateFiatPerCrypto`
  * means fiat major units for one whole crypto unit. The result is rounded up
- * so the required payment is never less than the quoted fiat value.
+ * to a multiple of `step` so the required payment is never less than the
+ * quoted fiat value.
  */
 export function fiatToBaseUnits(
   fiatAmount: string,
   rateFiatPerCrypto: string,
   assetDecimals: number,
+  step = 1n,
 ): bigint {
   const fiat = positiveDecimal(fiatAmount, 'fiatAmount');
   const rate = positiveDecimal(rateFiatPerCrypto, 'rateFiatPerCrypto');
   const scale = scaleFor(assetDecimals);
-  const units = fiat.div(rate).mul(scale.toString()).ceil();
-  return BigInt(units.toFixed(0));
+  if (step < 1n) throw new RangeError('step must be at least 1');
+  const steps = fiat.div(rate).mul(scale.toString()).div(step.toString()).ceil();
+  return BigInt(steps.toFixed(0)) * step;
 }
 
 /** Parses a human decimal amount without rounding or using JavaScript floats. */
@@ -62,23 +73,26 @@ export function formatBaseUnits(amount: bigint, decimals: number): string {
 
 /**
  * Picks a unique payable amount for shared-address invoices: `base + offset`, where the offset
- * is in [1, maxOffset] and the result is not already reserved by another open invoice. The
- * offset is random so amounts are not predictable from invoice order.
+ * is a multiple of `step` in [step, maxOffset] and the result is not already reserved by another
+ * open invoice. The offset is random so amounts are not predictable from invoice order.
  */
 export function pickUniqueAmount(
   baseUnits: bigint,
   maxOffset: bigint,
   reserved: ReadonlySet<bigint>,
   random: (maxExclusive: bigint) => bigint,
+  step = 1n,
 ): bigint {
   if (baseUnits <= 0n) throw new RangeError('base amount must be positive');
-  if (maxOffset < 1n) throw new RangeError('maxOffset must be at least 1');
+  if (step < 1n) throw new RangeError('step must be at least 1');
+  const slots = maxOffset / step;
+  if (slots < 1n) throw new RangeError('maxOffset must be at least one step');
   for (let attempt = 0; attempt < 64; attempt += 1) {
-    const candidate = baseUnits + 1n + random(maxOffset);
+    const candidate = baseUnits + step * (1n + random(slots));
     if (!reserved.has(candidate)) return candidate;
   }
-  for (let offset = 1n; offset <= maxOffset; offset += 1n) {
-    if (!reserved.has(baseUnits + offset)) return baseUnits + offset;
+  for (let slot = 1n; slot <= slots; slot += 1n) {
+    if (!reserved.has(baseUnits + slot * step)) return baseUnits + slot * step;
   }
   throw new RangeError('no unique amount is available; too many open invoices share this address');
 }

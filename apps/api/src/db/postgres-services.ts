@@ -489,6 +489,7 @@ export class PostgresApiServices implements ApiServices {
         decimals: asset.decimals,
         contract: asset.contract,
         wallet_asset: asset.walletAsset,
+        family: asset.family,
         address_mode: asset.addressMode,
         enabled: asset.enabled,
         available: available.some((option) => option.asset === asset.asset && option.network === asset.network),

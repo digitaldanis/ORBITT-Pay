@@ -65,6 +65,7 @@ export interface AssetRecord {
   decimals: number;
   contract: string | null;
   wallet_asset: string;
+  family: 'utxo' | 'evm' | 'tron' | 'solana';
   address_mode: 'derived' | 'shared';
   enabled: boolean;
   available: boolean;
@@ -107,6 +108,8 @@ export interface CreateInvoiceInput {
   webhook_url?: string;
   metadata?: Record<string, unknown>;
 }
+
+type ListQuerystring = { status?: InvoiceListQuery['status']; search?: string; limit?: string; cursor?: string };
 
 export interface InvoiceListQuery {
   status?: typeof invoiceStatuses[number];
@@ -190,7 +193,7 @@ const webhookBody = {
 
 const listQuery = {
   type: 'object', additionalProperties: false,
-  properties: { status: { type: 'string', enum: invoiceStatuses }, search: { type: 'string', minLength: 1, maxLength: 120 }, limit: { type: 'integer', minimum: 1, maximum: 100, default: 25 }, cursor: { type: 'string', maxLength: 255 } },
+  properties: { status: { type: 'string', enum: invoiceStatuses }, search: { type: 'string', minLength: 1, maxLength: 120 }, limit: { type: 'string', pattern: '^(100|[1-9][0-9]?)$' }, cursor: { type: 'string', maxLength: 255 } },
 } as const;
 
 const idParams = {
@@ -359,14 +362,15 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
   });
   app.get('/v1/dashboard/overview', { preHandler: requireDashboard, schema: { tags: ['dashboard'], summary: 'Get dashboard summary', security: [{ dashboardSession: [] }], response: { 200: { type: 'object', additionalProperties: true }, 401: errorSchema } } }, async (request) => services.getDashboardOverview(request.dashboardSession!.merchant));
   const dashboard = { tags: ['dashboard'], security: [{ dashboardSession: [] }] };
-  const listQueryFrom = (query: { status?: InvoiceListQuery['status']; search?: string; limit?: number; cursor?: string }): InvoiceListQuery => ({
-    limit: query.limit ?? 25,
+  // Query strings arrive as text and AJV coercion is off, so the limit is validated as digits and parsed here.
+  const listQueryFrom = (query: ListQuerystring): InvoiceListQuery => ({
+    limit: query.limit ? Number(query.limit) : 25,
     ...(query.status ? { status: query.status } : {}),
     ...(query.search ? { search: query.search } : {}),
     ...(query.cursor ? { cursor: query.cursor } : {}),
   });
 
-  app.get<{ Querystring: { status?: InvoiceListQuery['status']; search?: string; limit?: number; cursor?: string } }>('/v1/dashboard/invoices', {
+  app.get<{ Querystring: ListQuerystring }>('/v1/dashboard/invoices', {
     preHandler: requireDashboard,
     schema: { ...dashboard, summary: 'List dashboard invoices', querystring: listQuery, response: { 200: { type: 'object', required: ['data', 'next_cursor'], properties: { data: { type: 'array', items: invoiceSchema }, next_cursor: nullableString } }, 400: errorSchema, 401: errorSchema } },
   }, async (request) => services.listInvoices(request.dashboardSession!.merchant, listQueryFrom(request.query)));
@@ -469,7 +473,7 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
     return detail ? reply.send(detail.payments) : fail(reply, 404, 'invoice_not_found', 'Invoice not found.');
   });
 
-  app.get<{ Querystring: { status?: InvoiceListQuery['status']; search?: string; limit?: number; cursor?: string } }>('/v1/invoices', {
+  app.get<{ Querystring: ListQuerystring }>('/v1/invoices', {
     schema: {
       tags: ['invoices'], summary: 'List invoices',
       querystring: listQuery,
@@ -482,7 +486,7 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
     return invoice ? reply.send(invoice) : fail(reply, 404, 'invoice_not_found', 'Invoice not found.');
   });
 
-  app.get('/v1/assets', { schema: { tags: ['account'], summary: 'List the asset catalog and which assets can be invoiced', response: { 200: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['asset', 'network', 'enabled', 'available'], properties: { asset: { type: 'string' }, network: { type: 'string' }, name: { type: 'string' }, network_name: { type: 'string' }, decimals: { type: 'integer' }, contract: nullableString, wallet_asset: { type: 'string' }, address_mode: { type: 'string' }, enabled: { type: 'boolean' }, available: { type: 'boolean' } } } } } } }, async (request) => services.getAssets(request.merchant!));
+  app.get('/v1/assets', { schema: { tags: ['account'], summary: 'List the asset catalog and which assets can be invoiced', response: { 200: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['asset', 'network', 'enabled', 'available'], properties: { asset: { type: 'string' }, network: { type: 'string' }, name: { type: 'string' }, network_name: { type: 'string' }, decimals: { type: 'integer' }, contract: nullableString, wallet_asset: { type: 'string' }, family: { type: 'string' }, address_mode: { type: 'string' }, enabled: { type: 'boolean' }, available: { type: 'boolean' } } } } } } }, async (request) => services.getAssets(request.merchant!));
   app.get('/v1/account', { schema: { tags: ['account'], summary: 'Get merchant settings', response: { 200: { type: 'object', additionalProperties: true } } } }, async (request) => services.getAccount(request.merchant!));
 
   app.put<{ Body: { wallets: WalletInput[] } }>('/v1/account/wallets', {
