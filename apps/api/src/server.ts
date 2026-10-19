@@ -1,5 +1,8 @@
 import Fastify, { LogController } from 'fastify';
+import type { FastifyReply, FastifyRequest, RouteGenericInterface } from 'fastify';
+import { timingSafeEqual } from 'node:crypto';
 import rateLimit from '@fastify/rate-limit';
+import cookie from '@fastify/cookie';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { hashApiKey, readBearerToken } from './auth/api-key.js';
@@ -50,6 +53,19 @@ export interface PublicInvoiceRecord {
   cancel_url: string | null;
 }
 
+export interface DashboardLogin {
+  sessionToken: string;
+  csrfToken: string;
+  merchant: MerchantContext;
+  email: string;
+}
+
+export interface DashboardSession {
+  merchant: MerchantContext;
+  email: string;
+  csrfHash: string;
+}
+
 export interface CreateInvoiceInput {
   amount: string;
   currency: string;
@@ -82,11 +98,20 @@ export interface ApiServices {
   updateWallets(merchant: MerchantContext, wallets: Array<{ asset: string; network: string; extended_public_key?: string; address?: string }>): Promise<Record<string, unknown>>;
   setWebhook(merchant: MerchantContext, url: string | null, rotateSecret: boolean): Promise<{ webhook_url: string | null; signing_secret?: string }>;
   sendTestWebhook(merchant: MerchantContext): Promise<{ accepted: boolean }>;
+  loginDashboard(email: string, password: string): Promise<DashboardLogin | null>;
+  authenticateDashboardSession(sessionToken: string): Promise<DashboardSession | null>;
+  revokeDashboardSession(sessionToken: string): Promise<void>;
+  getDashboardOverview(merchant: MerchantContext): Promise<Record<string, unknown>>;
+  listDashboardWebhooks(merchant: MerchantContext): Promise<Array<Record<string, unknown>>>;
+  listDashboardApiKeys(merchant: MerchantContext): Promise<Array<Record<string, unknown>>>;
+  createDashboardApiKey(merchant: MerchantContext, name: string): Promise<{ id: string; name: string; key_prefix: string; secret: string }>;
+  revokeDashboardApiKey(merchant: MerchantContext, id: string): Promise<boolean>;
 }
 
 declare module 'fastify' {
   interface FastifyRequest {
     merchant: MerchantContext | null;
+    dashboardSession: DashboardSession | null;
   }
 }
 
@@ -133,12 +158,12 @@ const createBody = {
 const invoiceResponse = { 200: invoiceSchema, 400: errorSchema, 401: errorSchema, 404: errorSchema, 409: errorSchema, 422: errorSchema, 429: errorSchema, 500: errorSchema } as const;
 
 type ErrorReply = {
-  code(statusCode: 400 | 401 | 404 | 409 | 422 | 429 | 500): {
+  code(statusCode: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500): {
     send(payload: { error: { code: string; message: string; param?: string } }): unknown;
   };
 };
 
-function fail(reply: ErrorReply, status: 400 | 401 | 404 | 409 | 422 | 429 | 500, code: string, message: string, param?: string) {
+function fail(reply: ErrorReply, status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500, code: string, message: string, param?: string) {
   return reply.code(status).send({ error: { code, message, ...(param ? { param } : {}) } });
 }
 
@@ -151,13 +176,17 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
     ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: true } },
   });
   app.decorateRequest('merchant', null);
+  app.decorateRequest('dashboardSession', null);
 
   await app.register(swagger, {
     openapi: {
       openapi: '3.1.0',
       info: { title: 'ORBITT PAY API', version: '1.0.0', description: 'Merchant API for non-custodial crypto payment invoices.' },
       servers: [{ url: '/v1' }],
-      components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } } },
+      components: { securitySchemes: {
+        bearerAuth: { type: 'http', scheme: 'bearer' },
+        dashboardSession: { type: 'apiKey', in: 'cookie', name: 'ob_session' },
+      } },
       security: [{ bearerAuth: [] }],
     },
   });
@@ -170,6 +199,7 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
     },
     errorResponseBuilder: (_request, context) => ({ error: { code: 'rate_limit_exceeded', message: `Rate limit exceeded. Retry in ${Math.ceil(context.ttl / 1000)} seconds.` } }),
   });
+  await app.register(cookie);
   await app.register(swaggerUi, { routePrefix: '/docs', uiConfig: { docExpansion: 'list', deepLinking: true } });
 
   app.setErrorHandler((error, request, reply) => {
@@ -181,6 +211,7 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
   });
 
   app.addHook('preHandler', async (request, reply) => {
+    if (request.url.startsWith('/v1/dashboard/')) return;
     if ((request.method === 'GET' && (request.url === '/health' || request.url.startsWith('/docs') || request.url === '/v1/openapi.json'))
       || request.url.startsWith('/v1/public/invoices/')) return;
     const token = readBearerToken(request.headers.authorization);
@@ -208,6 +239,79 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
       created_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, success_url: { type: ['string', 'null'] }, cancel_url: { type: ['string', 'null'] },
     },
   } as const;
+
+  type ApiRawServer = ReturnType<typeof Fastify>['server'];
+  type ApiRequest = FastifyRequest<RouteGenericInterface, ApiRawServer>;
+  type ApiReply = FastifyReply<RouteGenericInterface, ApiRawServer>;
+  const requireDashboard = async (request: ApiRequest, reply: ApiReply) => {
+    const token = request.cookies.ob_session;
+    if (!token) return fail(reply, 401, 'dashboard_unauthorized', 'Sign in to continue.');
+    try {
+      const session = await services.authenticateDashboardSession(token);
+      if (!session) return fail(reply, 401, 'dashboard_unauthorized', 'Your dashboard session has expired. Sign in again.');
+      request.dashboardSession = session;
+    } catch (error) {
+      request.log.error({ err: error }, 'Dashboard session lookup failed');
+      return fail(reply, 500, 'internal_error', 'An unexpected error occurred.');
+    }
+  };
+  const requireDashboardCsrf = async (request: ApiRequest, reply: ApiReply) => {
+    const cookieToken = request.cookies.ob_csrf;
+    const headerToken = request.headers['x-csrf-token'];
+    if (!cookieToken || typeof headerToken !== 'string' || cookieToken !== headerToken || !request.dashboardSession) {
+      return fail(reply, 403, 'csrf_validation_failed', 'Refresh the dashboard session and try again.');
+    }
+    const actual = Buffer.from(hashApiKey(headerToken), 'hex');
+    const expected = Buffer.from(request.dashboardSession.csrfHash, 'hex');
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+      return fail(reply, 403, 'csrf_validation_failed', 'Refresh the dashboard session and try again.');
+    }
+  };
+
+  app.post<{ Body: { email: string; password: string } }>('/v1/dashboard/login', {
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+    schema: {
+      tags: ['dashboard'], summary: 'Sign in to the merchant dashboard', security: [],
+      body: { type: 'object', additionalProperties: false, required: ['email', 'password'], properties: { email: { type: 'string', format: 'email', maxLength: 320 }, password: { type: 'string', minLength: 1, maxLength: 1024 } } },
+      response: { 200: { type: 'object', required: ['merchant', 'email'], properties: { merchant: { type: 'object', required: ['id', 'name'], properties: { id: { type: 'string' }, name: { type: 'string' } } }, email: { type: 'string' } } }, 400: errorSchema, 401: errorSchema, 429: errorSchema },
+    },
+  }, async (request, reply) => {
+    const result = await services.loginDashboard(request.body.email, request.body.password);
+    if (!result) return fail(reply, 401, 'invalid_credentials', 'Email or password is incorrect.');
+    const secure = process.env.NODE_ENV === 'production';
+    const cookieOptions = { path: '/v1/dashboard', sameSite: 'strict' as const, secure, maxAge: 8 * 60 * 60 };
+    reply.setCookie('ob_session', result.sessionToken, { ...cookieOptions, httpOnly: true });
+    reply.setCookie('ob_csrf', result.csrfToken, { ...cookieOptions, path: '/', httpOnly: false });
+    return reply.send({ merchant: result.merchant, email: result.email });
+  });
+  app.get('/v1/dashboard/session', { preHandler: requireDashboard, schema: { tags: ['dashboard'], summary: 'Get the signed-in dashboard session', security: [{ dashboardSession: [] }], response: { 200: { type: 'object', properties: { merchant: { type: 'object' }, email: { type: 'string' } }, required: ['merchant', 'email'] }, 401: errorSchema } } }, async (request) => ({ merchant: request.dashboardSession!.merchant, email: request.dashboardSession!.email }));
+  app.post('/v1/dashboard/logout', { preHandler: [requireDashboard, requireDashboardCsrf], schema: { tags: ['dashboard'], summary: 'Sign out of the dashboard', security: [{ dashboardSession: [] }], response: { 200: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] }, 401: errorSchema, 403: errorSchema } } }, async (request, reply) => {
+    await services.revokeDashboardSession(request.cookies.ob_session!);
+    const secure = process.env.NODE_ENV === 'production';
+    reply.clearCookie('ob_session', { path: '/v1/dashboard', secure, sameSite: 'strict', httpOnly: true });
+    reply.clearCookie('ob_csrf', { path: '/', secure, sameSite: 'strict' });
+    return { ok: true };
+  });
+  app.get('/v1/dashboard/overview', { preHandler: requireDashboard, schema: { tags: ['dashboard'], summary: 'Get dashboard summary', security: [{ dashboardSession: [] }], response: { 200: { type: 'object', additionalProperties: true }, 401: errorSchema } } }, async (request) => services.getDashboardOverview(request.dashboardSession!.merchant));
+  app.get<{ Querystring: { status?: InvoiceListQuery['status']; limit?: number; cursor?: string } }>('/v1/dashboard/invoices', {
+    preHandler: requireDashboard,
+    schema: { tags: ['dashboard'], summary: 'List dashboard invoices', security: [{ dashboardSession: [] }], querystring: { type: 'object', additionalProperties: false, properties: { status: { type: 'string', enum: invoiceStatuses }, limit: { type: 'integer', minimum: 1, maximum: 100, default: 25 }, cursor: { type: 'string', maxLength: 255 } } }, response: { 200: { type: 'object', additionalProperties: true }, 401: errorSchema } },
+  }, async (request) => services.listInvoices(request.dashboardSession!.merchant, {
+    limit: request.query.limit ?? 25,
+    ...(request.query.status ? { status: request.query.status } : {}),
+    ...(request.query.cursor ? { cursor: request.query.cursor } : {}),
+  }));
+  app.get('/v1/dashboard/account', { preHandler: requireDashboard, schema: { tags: ['dashboard'], summary: 'Get dashboard account settings', security: [{ dashboardSession: [] }], response: { 200: { type: 'object', additionalProperties: true }, 401: errorSchema } } }, async (request) => services.getAccount(request.dashboardSession!.merchant));
+  app.put<{ Body: { wallets: Array<{ asset: string; network: string; extended_public_key?: string; address?: string }> } }>('/v1/dashboard/account/wallets', { preHandler: [requireDashboard, requireDashboardCsrf], schema: { hide: true, body: { type: 'object' } } }, async (request) => services.updateWallets(request.dashboardSession!.merchant, request.body.wallets));
+  app.put<{ Body: { url: string | null; rotate_secret?: boolean } }>('/v1/dashboard/account/webhook', { preHandler: [requireDashboard, requireDashboardCsrf], schema: { hide: true, body: { type: 'object' } } }, async (request) => services.setWebhook(request.dashboardSession!.merchant, request.body.url, request.body.rotate_secret ?? false));
+  app.get('/v1/dashboard/webhooks', { preHandler: requireDashboard, schema: { tags: ['dashboard'], summary: 'Get recent webhook deliveries', security: [{ dashboardSession: [] }], response: { 200: { type: 'array', items: { type: 'object', additionalProperties: true } }, 401: errorSchema } } }, async (request) => services.listDashboardWebhooks(request.dashboardSession!.merchant));
+  app.post('/v1/dashboard/webhooks/test', { preHandler: [requireDashboard, requireDashboardCsrf], config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, schema: { hide: true } }, async (request) => services.sendTestWebhook(request.dashboardSession!.merchant));
+  app.get('/v1/dashboard/api-keys', { preHandler: requireDashboard, schema: { tags: ['dashboard'], summary: 'List merchant API keys', security: [{ dashboardSession: [] }], response: { 200: { type: 'array', items: { type: 'object', additionalProperties: true } }, 401: errorSchema } } }, async (request) => services.listDashboardApiKeys(request.dashboardSession!.merchant));
+  app.post<{ Body: { name: string } }>('/v1/dashboard/api-keys', { preHandler: [requireDashboard, requireDashboardCsrf], schema: { hide: true, body: { type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 120 } } } } }, async (request, reply) => reply.code(201).send(await services.createDashboardApiKey(request.dashboardSession!.merchant, request.body.name)));
+  app.delete<{ Params: { id: string } }>('/v1/dashboard/api-keys/:id', { preHandler: [requireDashboard, requireDashboardCsrf], schema: { hide: true, params: idParams } }, async (request, reply) => {
+    const revoked = await services.revokeDashboardApiKey(request.dashboardSession!.merchant, request.params.id);
+    return revoked ? { ok: true } : fail(reply, 404, 'api_key_not_found', 'API key not found.');
+  });
   app.get<{ Params: { id: string } }>('/v1/public/invoices/:id', {
     schema: { tags: ['checkout'], summary: 'Read public payment details for checkout', security: [], params: idParams, response: { 200: publicInvoiceSchema, 404: errorSchema, 429: errorSchema } },
   }, async (request, reply) => {

@@ -25,3 +25,4 @@ The repository starts as an npm workspace monorepo. Applications and packages ar
 - Exchange rates are expressed as fiat major units per one crypto unit; conversions divide fiat value by that rate and round the required base-unit amount upward.
 - Initial rate sources: CoinGecko Simple Price with Kraken public ticker fallback. Cache for 20 seconds and reject source data older than 120 seconds by default.
 - Webhook delivery: PostgreSQL outbox and `FOR UPDATE SKIP LOCKED` worker; signing secrets are encrypted at rest with AES-256-GCM under `APP_ENCRYPTION_KEY`, and each queued delivery retains its encrypted signing-key snapshot across rotations.
+- Dashboard authentication: Argon2id password hashes, eight-hour random server-side sessions stored by token hash, HTTP-only `SameSite=Strict` cookies, and double-submit CSRF checks for state-changing requests.

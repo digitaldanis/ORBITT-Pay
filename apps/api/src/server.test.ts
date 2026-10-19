@@ -25,6 +25,14 @@ function mockServices(): ApiServices {
     updateWallets: async () => ({ updated: true }),
     setWebhook: async (_merchant, url) => ({ webhook_url: url }),
     sendTestWebhook: async () => ({ accepted: true }),
+    loginDashboard: async () => null,
+    authenticateDashboardSession: async () => null,
+    revokeDashboardSession: async () => undefined,
+    getDashboardOverview: async () => ({}),
+    listDashboardWebhooks: async () => [],
+    listDashboardApiKeys: async () => [],
+    createDashboardApiKey: async (_merchant, name) => ({ id: '0b9678da-f39f-4b3f-a74e-624eaa36d8bd', name, key_prefix: 'ob_live_test', secret }),
+    revokeDashboardApiKey: async () => true,
   };
 }
 
@@ -72,6 +80,34 @@ describe('merchant API', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().merchant_name).toBe(merchant.name);
     expect(response.json().metadata).toBeUndefined();
+    await app.close();
+  });
+
+  it('uses an HTTP-only session cookie and requires a CSRF token on dashboard mutations', async () => {
+    const services = mockServices();
+    const sessionToken = 'session_token_abcdefghijklmnopqrstuvwxyz';
+    const csrfToken = 'csrf_token_abcdefghijklmnopqrstuvwxyz';
+    services.loginDashboard = async () => ({ sessionToken, csrfToken, merchant, email: 'owner@example.test' });
+    services.authenticateDashboardSession = async (token) => token === sessionToken
+      ? { merchant, email: 'owner@example.test', csrfHash: hashApiKey(csrfToken) }
+      : null;
+    const app = await buildServer(services, { logger: false });
+    const login = await app.inject({ method: 'POST', url: '/v1/dashboard/login', payload: { email: 'owner@example.test', password: 'a long password' } });
+    expect(login.statusCode).toBe(200);
+    const setCookies = login.headers['set-cookie'];
+    expect(setCookies).toBeDefined();
+    const cookies = Array.isArray(setCookies) ? setCookies : [setCookies!];
+    const sessionCookie = cookies.find((value) => value.startsWith('ob_session='))!.split(';')[0]!;
+    const csrfCookie = cookies.find((value) => value.startsWith('ob_csrf='))!.split(';')[0]!;
+    expect(cookies.find((value) => value.startsWith('ob_session='))).toContain('HttpOnly');
+    expect(cookies.find((value) => value.startsWith('ob_csrf='))).toContain('Path=/;');
+
+    const session = await app.inject({ method: 'GET', url: '/v1/dashboard/session', headers: { cookie: `${sessionCookie}; ${csrfCookie}` } });
+    expect(session.statusCode).toBe(200);
+    const blocked = await app.inject({ method: 'POST', url: '/v1/dashboard/logout', headers: { cookie: `${sessionCookie}; ${csrfCookie}` } });
+    expect(blocked.statusCode).toBe(403);
+    const logout = await app.inject({ method: 'POST', url: '/v1/dashboard/logout', headers: { cookie: `${sessionCookie}; ${csrfCookie}`, 'x-csrf-token': csrfToken } });
+    expect(logout.statusCode).toBe(200);
     await app.close();
   });
 });

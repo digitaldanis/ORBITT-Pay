@@ -4,7 +4,7 @@
 
 **Payments for every chain.** ORBITT PAY is a self-hosted, non-custodial crypto payment processor for online shops. Merchants configure public wallet keys; the service creates invoices, watches for payments, and sends signed webhooks.
 
-> Project status: core invoice logic, public address derivation, PostgreSQL-backed merchant API, cached exchange rates, initial chain watchers, signed webhook delivery, and hosted checkout are implemented. Dashboard and complete self-hosted deployment are still in progress.
+> Project status: core invoice logic, public address derivation, PostgreSQL-backed merchant API, cached exchange rates, initial chain watchers, signed webhook delivery, hosted checkout, and a session-protected merchant dashboard are implemented. Complete self-hosted deployment is still in progress.
 
 ## Design principles
 
@@ -39,10 +39,13 @@ To initialize PostgreSQL and create the first merchant API key:
 ```sh
 npm run db:migrate --workspace apps/api
 npm run api-key:create --workspace apps/api -- "Example Shop"
+npm run dashboard:user:create --workspace apps/api -- <merchant-uuid> owner@example.com
 npm run start --workspace apps/api
+npm run start --workspace apps/worker
+npm run dev --workspace apps/dashboard
 ```
 
-The API key is printed once. Save it securely. Configure at least one public account key through `PUT /v1/account/wallets` before creating invoices. The initial invoice allocator supports BTC, LTC, and native ETH on the configured EVM networks; see [docs/api.md](./docs/api.md).
+Before creating the dashboard user, set `DASHBOARD_USER_PASSWORD` in your local `.env` file. The merchant ID is printed by the key-creation command. Both the API key and webhook signing secret are shown once; save them securely. Configure at least one public account key through `PUT /v1/account/wallets` before creating invoices. The initial invoice allocator supports BTC, LTC, and native ETH on the configured EVM networks; see [docs/api.md](./docs/api.md) and [docs/dashboard.md](./docs/dashboard.md).
 
 ## Security
 

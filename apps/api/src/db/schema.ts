@@ -125,3 +125,22 @@ export const webhookDeliveryAttempts = pgTable('webhook_delivery_attempts', {
 }, (table) => ({
   deliveryAttemptUnique: uniqueIndex('webhook_delivery_attempts_delivery_attempt_unique').on(table.deliveryId, table.attemptNumber),
 }));
+
+export const merchantUsers = pgTable('merchant_users', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  merchantId: uuid('merchant_id').notNull().references(() => merchants.id),
+  email: varchar('email', { length: 320 }).notNull(),
+  passwordHash: text('password_hash').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  disabledAt: timestamp('disabled_at', { withTimezone: true }),
+});
+
+export const dashboardSessions = pgTable('dashboard_sessions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => merchantUsers.id, { onDelete: 'cascade' }),
+  tokenHash: varchar('token_hash', { length: 64 }).notNull().unique(),
+  csrfHash: varchar('csrf_hash', { length: 64 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+});
