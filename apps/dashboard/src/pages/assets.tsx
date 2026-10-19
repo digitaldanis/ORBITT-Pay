@@ -1,10 +1,11 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { KeyRound, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+import { KeyRound, Plus, ShieldCheck, Sparkles, Trash2 } from 'lucide-react';
 import { CoinIcon } from '@orbitt/ui';
 import { api, errorMessage, type Account, type AssetFamily, type CatalogAsset, type NetworkHealth, type Wallet } from '../api.js';
 import { middleTruncate, relativeTime } from '../format.js';
 import { Banner, Loading, Modal, PageHeader } from '../ui.js';
 import { useCatalog } from '../catalog.js';
+import { CreateWalletModal } from './wallet-setup.js';
 
 interface NetworkWallet { native: CatalogAsset; tokens: CatalogAsset[]; wallet: Wallet | undefined; health: NetworkHealth | undefined }
 
@@ -58,6 +59,7 @@ function WalletModal({ entry, onClose, onSaved }: { entry: NetworkWallet; onClos
 export function AssetsPage({ account, reloadAccount }: { account: Account | null; reloadAccount: () => Promise<void> }) {
   const catalog = useCatalog();
   const [editing, setEditing] = useState<NetworkWallet | null>(null);
+  const [creating, setCreating] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -84,7 +86,9 @@ export function AssetsPage({ account, reloadAccount }: { account: Account | null
   const coins = catalog.assets.filter((asset) => asset.available).length;
 
   return <>
-    <PageHeader title="Assets" description="Connect a public key per network. Every coin and token on that network is then ready for checkout." />
+    <PageHeader title="Assets" description="Create a new wallet in one step or connect public keys from a wallet you already use. Every coin and token on a connected network is ready for checkout.">
+      <button className="primary-button" onClick={() => setCreating(true)}><Sparkles size={15} />Create wallet</button>
+    </PageHeader>
     {message && <Banner tone="success" onDismiss={() => setMessage('')}>{message}</Banner>}
     {(error || catalog.error) && <Banner tone="error" onDismiss={() => setError('')}>{error || catalog.error}</Banner>}
     <div className="summary-strip">
@@ -127,5 +131,6 @@ export function AssetsPage({ account, reloadAccount }: { account: Account | null
       </div>
     )}
     {editing && <WalletModal entry={editing} onClose={() => setEditing(null)} onSaved={saved} />}
+    {creating && <CreateWalletModal networks={entries.map((entry) => ({ native: entry.native, tokens: entry.tokens, connected: Boolean(entry.wallet) }))} onClose={() => setCreating(false)} onSaved={saved} />}
   </>;
 }

@@ -23,7 +23,7 @@ export function InvoiceTable({ invoices, onOpen, compact = false }: { invoices: 
               <td className="hide-sm">{invoice.asset && invoice.network
                 ? <span className="coin-cell"><CoinIcon asset={invoice.asset} network={invoice.network} size={24} /><span>{invoice.asset}<small>{networkName(invoice.network)}</small></span></span>
                 : <span className="muted">Customer chooses</span>}</td>
-              <td><StatusBadge status={invoice.status} /></td>
+              <td><StatusBadge status={invoice.status} />{invoice.status === 'confirming' && invoice.required_confirmations && invoice.required_confirmations > 1 && <small>{invoice.confirmations ?? 0}/{invoice.required_confirmations} confirmations</small>}</td>
               <td className="date-cell hide-sm" title={dateLabel(compact ? invoice.updated_at : invoice.created_at)}>{relativeTime(compact ? invoice.updated_at : invoice.created_at)}</td>
               <td className="chevron-cell hide-sm"><ChevronRight size={16} /></td>
             </tr>
@@ -216,12 +216,21 @@ export function InvoiceDrawer({ id, onClose, onChanged }: { id: string; onClose:
             <div><strong>{asset?.name ?? invoice.asset}</strong><span>{networkName(invoice.network)}{asset?.address_mode === 'shared' ? ' · matched by exact amount' : ''}</span></div>
           </div>
         )}
+        {['detected', 'confirming', 'overpaid'].includes(invoice.status) && invoice.required_confirmations && (
+          <div className="confirm-card">
+            <div><strong>{Math.min(invoice.confirmations ?? 0, invoice.required_confirmations)} of {invoice.required_confirmations} confirmations</strong><span>Marked paid automatically when reached</span></div>
+            <div className="confirm-track"><i style={{ width: `${Math.max(4, Math.min(1, (invoice.confirmations ?? 0) / invoice.required_confirmations) * 100)}%` }} /></div>
+          </div>
+        )}
+        {invoice.status === 'awaiting_payment' && <p className="muted small-text">No transfer seen yet. The scanner checks the network every few seconds.</p>}
         {actionError && <Banner tone="error" onDismiss={() => setActionError('')}>{actionError}</Banner>}
 
         <h3 className="section-title">Details</h3>
         <div className="detail-list">
           <DetailRow label="Checkout link"><span className="inline-actions"><a href={invoice.checkout_url} target="_blank" rel="noreferrer">Open <ExternalLink size={12} /></a><CopyButton compact value={invoice.checkout_url} label="Copy checkout link" /></span></DetailRow>
           {invoice.address && <DetailRow label="Address" mono><span className="inline-actions"><span title={invoice.address}>{middleTruncate(invoice.address, 10, 8)}</span><CopyButton compact value={invoice.address} label="Copy address" /></span></DetailRow>}
+          {data.derivation_path && <DetailRow label="Wallet path" mono>{data.derivation_path}</DetailRow>}
+          {invoice.required_confirmations && <DetailRow label="Confirmations">{invoice.confirmations ?? 0} / {invoice.required_confirmations}</DetailRow>}
           {invoice.exchange_rate && invoice.asset && <DetailRow label="Rate">1 {invoice.asset} = {formatFiat(invoice.exchange_rate, invoice.currency)}</DetailRow>}
           {invoice.asset && <DetailRow label="Received" mono>{invoice.received_amount} {invoice.asset}</DetailRow>}
           {amountDiffers(invoice.surplus_amount) && <DetailRow label="Surplus" mono>{invoice.surplus_amount} {invoice.asset}</DetailRow>}
@@ -237,7 +246,7 @@ export function InvoiceDrawer({ id, onClose, onChanged }: { id: string; onClose:
               const explorer = invoice.network ? explorerTransactionUrl(invoice.network, payment.transaction_id) : null;
               return (
                 <li key={payment.transaction_id}>
-                  <div><strong className="mono">{payment.amount} {payment.asset}</strong><span>{payment.confirmations} confirmations · {relativeTime(payment.observed_at)}</span></div>
+                  <div><strong className="mono">{payment.amount} {payment.asset}</strong><span>{invoice.required_confirmations ? `${Math.min(Number(payment.confirmations), invoice.required_confirmations)}/${invoice.required_confirmations}` : payment.confirmations} confirmations · {relativeTime(payment.observed_at)}</span></div>
                   {explorer ? <a className="secondary-button small" href={explorer} target="_blank" rel="noreferrer">{middleTruncate(payment.transaction_id, 6, 4)} <ExternalLink size={12} /></a> : <span className="mono small-text">{middleTruncate(payment.transaction_id, 6, 4)}</span>}
                 </li>
               );

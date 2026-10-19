@@ -7,7 +7,9 @@ The customer checkout is the Vite/React app in `apps/checkout`, served at `/chec
 1. **Choose a coin.** Invoices created without a coin list every available asset, grouped by coin with a network picker (for example USDT on Ethereum, TRON or Solana). Choosing one calls `POST /v1/public/invoices/{id}/payment`, which locks the quote and assigns the address.
 2. **Pay.** The page shows the exact amount, a QR code, an **Open in wallet** button on phones, copy buttons for amount and address, a countdown and a warning to use only the selected network. Solana invoices also explain that the exact amount identifies the payment.
 3. **Track.** The page polls every 4 seconds (every 20 seconds while no coin is chosen) and refreshes when the tab becomes visible again. A timeline shows waiting, detected, confirming and paid. Underpaid invoices show the remaining amount to send to the same address.
-4. **Done.** A receipt confirms the payment and returns to `success_url` after a few seconds. Expired, late and cancelled invoices get their own explanation.
+   - **Nothing received yet:** below the QR code a pulsing box says the network is being watched and the page updates by itself.
+   - **Received, confirming:** the QR code is replaced by a progress card with `X of Y confirmations`, a progress bar and an estimated time left (`confirmation_eta_seconds`, from the network's block time). Each transfer is listed with its amount, its own confirmation count and an explorer link. The customer can close the page; the merchant is notified automatically.
+4. **Done.** A receipt confirms the payment, links the transaction in the block explorer and returns to `success_url` after a few seconds. Expired, late and cancelled invoices get their own explanation.
 
 ## Payment links
 

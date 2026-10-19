@@ -10,8 +10,8 @@
 - **Customer picks the coin.** Create a payment link with just a fiat amount; the customer chooses coin and network at checkout and the price locks at that moment. Shops can also preselect a coin through the API.
 - **Exact amounts.** Quotes are rounded up to at most 8 decimals, so the merchant never receives less than the asking price. Underpaid, overpaid and late payments are tracked separately, and the customer sees the remaining amount.
 - **A unique address per invoice.** BIP84 (BTC, LTC), BIP44 (EVM, TRON) child addresses come from the merchant's account xpub. Solana has no public derivation, so each invoice gets a unique amount on the merchant's address instead.
-- **Hosted checkout** in English and German: QR codes with wallet deep links (BIP21, EIP-681, Solana Pay), copy buttons, a live countdown and a confirmation timeline.
-- **Merchant dashboard:** volume chart, invoice search and detail drawer with on-chain payments and webhook history, payment links, wallet setup per network with live scanner health, webhook retries and API keys.
+- **Hosted checkout** in English and German: QR codes with wallet deep links (BIP21, EIP-681, Solana Pay), copy buttons, a live countdown and live status: waiting for payment, payment received with `X of Y confirmations` and time left, then a receipt with the transaction link.
+- **Merchant dashboard:** volume chart, invoice search and detail drawer with on-chain payments and webhook history, payment links, a wallet creation wizard (recovery phrase stays in the browser), wallet setup per network with live scanner health, webhook retries and API keys.
 - **Signed webhooks** (HMAC-SHA256) through a PostgreSQL outbox with retries and an encrypted signing secret.
 - **JavaScript SDK** with a typed client and a webhook verifier.
 

@@ -16,6 +16,8 @@ export interface Invoice {
   received_amount: string;
   surplus_amount: string;
   exchange_rate: string | null;
+  confirmations: number | null;
+  required_confirmations: number | null;
   expires_at: string;
   created_at: string;
   updated_at: string;
@@ -37,7 +39,7 @@ export interface WebhookDelivery {
   next_attempt_at: string | null;
 }
 
-export interface InvoiceDetail { invoice: Invoice; payments: Payment[]; webhooks: WebhookDelivery[] }
+export interface InvoiceDetail { invoice: Invoice; derivation_path: string | null; payments: Payment[]; webhooks: WebhookDelivery[] }
 
 export interface Wallet {
   asset: string;
