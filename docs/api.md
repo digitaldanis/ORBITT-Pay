@@ -20,7 +20,7 @@ Send `Authorization: Bearer <secret_key>` on merchant endpoints. Keys carry 256 
 | `PUT` | `/v1/account/wallets` | Connect public wallet keys or addresses |
 | `PUT` | `/v1/account/webhook` | Set the webhook URL or rotate its signing secret |
 | `POST` | `/v1/webhooks/test` | Queue a `webhook.test` event |
-| `GET` | `/v1/public/invoices/{id}` | Checkout view of an invoice (no API key) |
+| `GET` | `/v1/public/invoices/{id}` | Checkout view of an invoice (no API key); adds `transactions` and `confirmation_eta_seconds` |
 | `POST` | `/v1/public/invoices/{id}/payment` | Customer picks `asset` and `network` (no API key) |
 | `POST` | `/v1/public/invoices/{id}/cancel` | Customer cancels an unpaid invoice (no API key) |
 
@@ -65,6 +65,8 @@ Reusing an idempotency key with the same body returns the original invoice; reus
   "received_amount": "0",
   "surplus_amount": "0",
   "exchange_rate": "73519",
+  "confirmations": null,
+  "required_confirmations": 2,
   "expires_at": "2026-10-19T13:10:39.518Z",
   "created_at": "2026-10-19T12:55:39.354Z",
   "updated_at": "2026-10-19T12:55:39.354Z",
@@ -72,7 +74,7 @@ Reusing an idempotency key with the same body returns the original invoice; reus
 }
 ```
 
-`crypto_amount`, `asset`, `network`, `address` and `exchange_rate` are `null` while the invoice is `created`. Amounts are strings in whole units of `asset`; timestamps are ISO 8601 UTC.
+`crypto_amount`, `asset`, `network`, `address`, `exchange_rate` and `required_confirmations` are `null` while the invoice is `created`. `confirmations` is the lowest confirmation count across the transfers seen so far (`null` before the first one); the invoice turns `paid` when it reaches `required_confirmations`, which is fixed when the coin is picked (defaults per network, override with `CONFIRMATIONS_<NETWORK>`, for example `CONFIRMATIONS_BITCOIN=3`). Amounts are strings in whole units of `asset`; timestamps are ISO 8601 UTC.
 
 ## Statuses
 

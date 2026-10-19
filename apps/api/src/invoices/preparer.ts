@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { deriveEvmReceiveAddress, deriveTronReceiveAddress, deriveUtxoReceiveAddress } from '@orbitt/chains';
-import { decimalToBaseUnits, fiatToBaseUnits, formatBaseUnits, pickUniqueAmount, quoteStep } from '@orbitt/core';
+import { decimalToBaseUnits, fiatToBaseUnits, formatBaseUnits, pickUniqueAmount, quoteStep, requiredConfirmations } from '@orbitt/core';
 import type { AddressMode, AssetDefinition } from '@orbitt/core';
 import type { RateService } from '@orbitt/rates';
 import { ApiError } from '../errors.js';
@@ -23,12 +23,15 @@ export interface PreparerOptions {
   selectionMinutes?: number;
   /** Only offer networks with a recent worker heartbeat. */
   requireLiveScanner?: boolean;
+  /** Source of CONFIRMATIONS_<NETWORK> overrides; defaults to process.env. */
+  env?: Readonly<Record<string, string | undefined>>;
 }
 
 export class PostgresInvoicePreparer implements InvoicePreparer {
   private readonly expiryMinutes: number;
   private readonly selectionMinutes: number;
   private readonly requireLiveScanner: boolean;
+  private readonly env: Readonly<Record<string, string | undefined>>;
 
   constructor(
     private readonly assets: readonly AssetDefinition[],
@@ -38,6 +41,7 @@ export class PostgresInvoicePreparer implements InvoicePreparer {
     this.expiryMinutes = options.expiryMinutes ?? 15;
     this.selectionMinutes = options.selectionMinutes ?? 60;
     this.requireLiveScanner = options.requireLiveScanner ?? false;
+    this.env = options.env ?? process.env;
   }
 
   private isFiat(currency: string): boolean {
@@ -215,6 +219,7 @@ export class PostgresInvoicePreparer implements InvoicePreparer {
       rateUsed,
       rateTimestamp,
       expiresAt: new Date(Date.now() + this.expiryMinutes * 60_000),
+      requiredConfirmations: requiredConfirmations(asset.network, this.env),
     };
   }
 }

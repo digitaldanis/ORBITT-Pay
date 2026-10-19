@@ -103,12 +103,19 @@ describe.skipIf(!databaseUrl)('payment flow (PostgreSQL)', () => {
 
     await scanner.applyTransfers(await openInvoice(created.id), [transfer('b'.repeat(64), 30_000n, 1n)], 'bitcoin');
     expect((await openInvoice(created.id)).status).toBe('confirming');
+    // The first transfer is still unconfirmed, so the invoice waits for both to reach 2 on Bitcoin.
+    expect(await services.getPublicInvoice(created.id)).toMatchObject({
+      status: 'confirming', confirmations: 0, required_confirmations: 2, confirmation_eta_seconds: 1200,
+      transactions: [{ amount: '0.0002', confirmations: 0 }, { amount: '0.0003', confirmations: 1 }],
+    });
 
     await scanner.applyTransfers(await openInvoice(created.id), [transfer('a'.repeat(64), 20_000n, 3n), transfer('b'.repeat(64), 30_000n, 2n)], 'bitcoin');
     const paid = await services.getInvoiceDetail(merchant, created.id);
-    expect(paid!.invoice).toMatchObject({ status: 'paid', received_amount: '0.0005', surplus_amount: '0' });
+    expect(paid!.invoice).toMatchObject({ status: 'paid', received_amount: '0.0005', surplus_amount: '0', confirmations: 2, required_confirmations: 2 });
+    expect(paid!.derivation_path).toBe("m/84'/0'/0'/0/0");
     expect(paid!.payments).toHaveLength(2);
-    expect(await events(created.id)).toEqual(['invoice.created', 'invoice.detected', 'invoice.underpaid', 'invoice.paid']);
+    expect((await services.getPublicInvoice(created.id))!.confirmation_eta_seconds).toBeNull();
+    expect(await events(created.id)).toEqual(['invoice.created', 'invoice.detected', 'invoice.underpaid', 'invoice.confirming', 'invoice.paid']);
   });
 
   it('delivers signed webhooks that verify with the merchant secret', async () => {

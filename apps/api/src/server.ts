@@ -55,6 +55,12 @@ export interface PublicInvoiceRecord {
   success_url: string | null;
   cancel_url: string | null;
   payment_options: PaymentOptionRecord[];
+  /** Confirmations on the least-confirmed transfer, null before the first transfer. */
+  confirmations: number | null;
+  required_confirmations: number | null;
+  /** Rough seconds until the invoice is confirmed, while it is confirming. */
+  confirmation_eta_seconds: number | null;
+  transactions: Array<{ transaction_id: string; amount: string; confirmations: number; observed_at: string }>;
 }
 
 export interface AssetRecord {
@@ -73,6 +79,8 @@ export interface AssetRecord {
 
 export interface InvoiceDetail {
   invoice: InvoiceRecord;
+  /** HD path of the receiving address below the wallet's root, so the merchant can find the funds. */
+  derivation_path: string | null;
   payments: Array<{ transaction_id: string; asset: string; amount: string; confirmations: string; block_number: string | null; observed_at: string }>;
   webhooks: Array<Record<string, unknown>>;
 }
@@ -175,6 +183,7 @@ const invoiceSchema = {
     asset: nullableString, network: nullableString, address: nullableString,
     status: { type: 'string', enum: invoiceStatuses }, checkout_url: { type: 'string', format: 'uri' },
     received_amount: { type: 'string' }, surplus_amount: { type: 'string' }, exchange_rate: nullableString,
+    confirmations: { type: ['integer', 'null'] }, required_confirmations: { type: ['integer', 'null'] },
     expires_at: { type: 'string', format: 'date-time' }, created_at: { type: 'string', format: 'date-time' },
     updated_at: { type: 'string', format: 'date-time' },
     metadata: { type: 'object', additionalProperties: true },
@@ -305,6 +314,15 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
       status: { type: 'string', enum: invoiceStatuses },
       created_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, success_url: nullableString, cancel_url: nullableString,
       payment_options: { type: 'array', items: paymentOptionSchema },
+      confirmations: { type: ['integer', 'null'] }, required_confirmations: { type: ['integer', 'null'] },
+      confirmation_eta_seconds: { type: ['integer', 'null'] },
+      transactions: {
+        type: 'array',
+        items: {
+          type: 'object', additionalProperties: false, required: ['transaction_id', 'amount', 'confirmations', 'observed_at'],
+          properties: { transaction_id: { type: 'string' }, amount: { type: 'string' }, confirmations: { type: 'integer' }, observed_at: { type: 'string', format: 'date-time' } },
+        },
+      },
     },
   } as const;
 

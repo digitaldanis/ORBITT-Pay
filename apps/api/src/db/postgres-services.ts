@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { hash as hashPassword, verify as verifyPassword, Algorithm } from '@node-rs/argon2';
 import type { Pool, PoolClient } from 'pg';
 import { isSolanaWalletAddress, parseAccountPublicKey } from '@orbitt/chains';
-import { findAsset, formatBaseUnits, INVOICE_COLUMNS, INVOICE_COLUMNS_I, serializeInvoice } from '@orbitt/core';
+import { confirmationEta, findAsset, formatBaseUnits, INVOICE_COLUMNS, INVOICE_COLUMNS_I, serializeInvoice } from '@orbitt/core';
 import type { AddressMode, AssetDefinition, InvoiceRow } from '@orbitt/core';
 import { encryptSecret, enqueueInvoiceEvent } from '@orbitt/webhooks';
 import { createApiKey } from '../auth/api-key.js';
@@ -23,6 +23,7 @@ export interface PaymentSelection {
   rateUsed: string | null;
   rateTimestamp: Date | null;
   expiresAt: Date;
+  requiredConfirmations: number;
 }
 
 export interface PaymentOption {
@@ -277,15 +278,15 @@ export class PostgresApiServices implements ApiServices {
              merchant_id, order_id, request_amount, request_currency, fiat_amount, fiat_currency,
              rate_used, rate_timestamp, crypto_amount_base_units, crypto_amount, asset, network,
              address, address_mode, derivation_path, success_url, cancel_url, webhook_url, status, expires_at, metadata,
-             payment_selected_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+             payment_selected_at, required_confirmations
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
            RETURNING ${INVOICE_COLUMNS}`,
           [merchant.id, input.order_id ?? null, prepared.amount, prepared.currency, prepared.fiatAmount, prepared.fiatCurrency,
             payment?.rateUsed ?? null, payment?.rateTimestamp ?? null, payment?.cryptoAmountBaseUnits.toString() ?? null,
             payment?.cryptoAmount ?? null, payment?.asset ?? null, payment?.network ?? null, payment?.address ?? null,
             payment?.addressMode ?? 'derived', payment?.derivationPath ?? null, prepared.successUrl, prepared.cancelUrl,
             prepared.webhookUrl, payment ? 'awaiting_payment' : 'created', prepared.expiresAt, input.metadata ?? {},
-            payment ? new Date() : null],
+            payment ? new Date() : null, payment?.requiredConfirmations ?? null],
         );
         const invoice = this.toInvoice(insert.rows[0]!);
         await enqueueInvoiceEvent(client, this.catalog, invoice.id, 'invoice.created');
@@ -322,8 +323,10 @@ export class PostgresApiServices implements ApiServices {
       `SELECT transaction_id, asset, amount_base_units, confirmations::text, block_number::text, observed_at
        FROM invoice_payments WHERE invoice_id = $1 ORDER BY observed_at`, [id],
     );
+    const path = await this.pool.query<{ derivation_path: string | null }>('SELECT derivation_path FROM invoices WHERE id = $1', [id]);
     return {
       invoice,
+      derivation_path: path.rows[0]?.derivation_path ?? null,
       payments: payments.rows.map((row) => ({
         transaction_id: row.transaction_id,
         asset: row.asset,
@@ -350,6 +353,13 @@ export class PostgresApiServices implements ApiServices {
     const options = row.status === 'created' && row.expires_at.getTime() > Date.now()
       ? await this.withClient(client, (connection) => this.preparer.paymentOptions(connection, row.merchant_id))
       : [];
+    const transfers = await client.query<{ transaction_id: string; amount_base_units: string; confirmations: string; observed_at: Date }>(
+      `SELECT transaction_id, amount_base_units, confirmations::text, observed_at
+       FROM invoice_payments WHERE invoice_id = $1 ORDER BY observed_at`, [id],
+    );
+    const confirmations = row.confirmations === null ? null : Number(row.confirmations);
+    const required = row.required_confirmations;
+    const waiting = ['detected', 'confirming', 'overpaid'].includes(row.status) && required !== null && row.network !== null;
     return {
       id: row.id,
       merchant_name: row.merchant_name,
@@ -374,6 +384,15 @@ export class PostgresApiServices implements ApiServices {
       success_url: row.success_url,
       cancel_url: row.cancel_url,
       payment_options: options,
+      confirmations,
+      required_confirmations: required,
+      confirmation_eta_seconds: waiting ? confirmationEta(row.network!, required! - (confirmations ?? 0)) : null,
+      transactions: transfers.rows.map((transfer) => ({
+        transaction_id: transfer.transaction_id,
+        amount: format(BigInt(transfer.amount_base_units)),
+        confirmations: Number(transfer.confirmations),
+        observed_at: transfer.observed_at.toISOString(),
+      })),
     };
   }
 
@@ -411,10 +430,11 @@ export class PostgresApiServices implements ApiServices {
         await client.query(
           `UPDATE invoices SET asset = $2, network = $3, crypto_amount = $4, crypto_amount_base_units = $5, address = $6,
              address_mode = $7, derivation_path = $8, rate_used = $9, rate_timestamp = $10, expires_at = $11,
-             status = 'awaiting_payment', payment_selected_at = now(), updated_at = now()
+             required_confirmations = $12, status = 'awaiting_payment', payment_selected_at = now(), updated_at = now()
            WHERE id = $1`,
           [id, payment.asset, payment.network, payment.cryptoAmount, payment.cryptoAmountBaseUnits.toString(), payment.address,
-            payment.addressMode, payment.derivationPath, payment.rateUsed, payment.rateTimestamp, payment.expiresAt],
+            payment.addressMode, payment.derivationPath, payment.rateUsed, payment.rateTimestamp, payment.expiresAt,
+            payment.requiredConfirmations],
         );
         return this.readPublicInvoice(client, id);
       });

@@ -40,5 +40,7 @@ The repository starts as an npm workspace monorepo. Applications and packages ar
 - Address reuse: a derived address is never handed out twice on a network, even after a key change resets the derivation index. Transfers older than the coin selection are ignored.
 - Webhook ordering: outbox rows use `clock_timestamp()` so several events from one transaction keep their order.
 - Shared UI: `@orbitt/ui` holds the orbit mark, coin icons, explorer links and design tokens for checkout and dashboard.
+- Wallet creation happens in the browser: the dashboard generates the BIP39 phrase, verifies the backup and uploads only public keys. The server never sees a secret, so a database leak cannot move funds. A custodial model with automatic forwarding was not chosen because it would hold customer money and private keys on the server.
+- Required confirmations are stored on the invoice when the coin is picked (`required_confirmations`), so changing `CONFIRMATIONS_<NETWORK>` never changes the rule for an invoice already being paid. `invoice.confirming` fires once the full amount is seen.
 - Known limit: transfers removed by a chain reorganization after being counted are not rolled back automatically; confirmation depth is the safeguard.
 

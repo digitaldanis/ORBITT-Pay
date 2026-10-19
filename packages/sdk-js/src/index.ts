@@ -24,6 +24,10 @@ export interface Invoice {
   surplus_amount: string;
   /** Fiat price of one `asset` unit used for the quote, when priced in fiat. */
   exchange_rate: string | null;
+  /** Lowest confirmation count across the transfers seen so far, or `null` before the first one. */
+  confirmations: number | null;
+  /** Confirmations needed before the invoice turns `paid`, fixed when the customer picks a coin. */
+  required_confirmations: number | null;
   expires_at: string;
   created_at: string;
   updated_at: string;
@@ -74,6 +78,7 @@ export interface InvoiceList {
 export type WebhookEventType =
   | 'invoice.created'
   | 'invoice.detected'
+  | 'invoice.confirming'
   | 'invoice.paid'
   | 'invoice.underpaid'
   | 'invoice.overpaid'

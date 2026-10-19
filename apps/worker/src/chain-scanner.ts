@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { associatedTokenAddress, EsploraWatcher, EvmWatcher, SolanaWatcher, TronWatcher } from '@orbitt/chains';
 import type { ChainTransfer, SolanaWatchTarget } from '@orbitt/chains';
-import { findAsset, recordPayment } from '@orbitt/core';
+import { findAsset, recordPayment, requiredConfirmations } from '@orbitt/core';
 import type { AssetDefinition, Invoice, InvoiceStatus } from '@orbitt/core';
 import { enqueueInvoiceEvent } from '@orbitt/webhooks';
 
@@ -19,6 +19,7 @@ export interface OpenInvoice {
   expires_at: Date;
   created_at: Date;
   payment_selected_at: Date | null;
+  required_confirmations: number | null;
 }
 
 export interface ScannerLogger {
@@ -28,7 +29,7 @@ export interface ScannerLogger {
 
 const SCANNABLE_STATUSES = "'awaiting_payment', 'detected', 'confirming', 'underpaid', 'overpaid'";
 const INVOICE_SELECT = `id, merchant_id, crypto_amount_base_units, received_amount_base_units, surplus_base_units,
-  asset, network, address, address_mode, status, expires_at, created_at, payment_selected_at`;
+  asset, network, address, address_mode, status, expires_at, created_at, payment_selected_at, required_confirmations`;
 
 export const EVM_CHAINS: Readonly<Record<string, { chainId: number; env: string }>> = {
   ethereum: { chainId: 1, env: 'ETHEREUM_RPC_URL' },
@@ -44,14 +45,6 @@ const UTXO_ENDPOINT_ENV: Readonly<Record<string, readonly string[]>> = {
   bitcoin: ['BITCOIN_ESPLORA_URL', 'BITCOIN_RPC_URL'],
   'bitcoin-testnet': ['BITCOIN_TESTNET_ESPLORA_URL', 'BITCOIN_TESTNET_EXPLORER_URL'],
   litecoin: ['LITECOIN_ESPLORA_URL', 'LITECOIN_RPC_URL'],
-};
-
-const DEFAULT_CONFIRMATIONS: Readonly<Record<string, bigint>> = {
-  bitcoin: 2n, 'bitcoin-testnet': 2n, litecoin: 6n,
-  ethereum: 12n, 'ethereum-sepolia': 2n, base: 10n, arbitrum: 10n, optimism: 10n, polygon: 64n, 'bnb-chain': 15n,
-  // TRON history is read with only_confirmed=true (solidified) and Solana with the finalized
-  // commitment, so one observation is already final on those networks.
-  tron: 1n, solana: 1n,
 };
 
 /** How far a transfer's chain timestamp may predate the invoice's coin selection and still count. */
@@ -143,10 +136,9 @@ export class ChainScanner {
     return [];
   }
 
-  private requiredConfirmations(network: string): bigint {
-    const override = this.env[`CONFIRMATIONS_${network.toUpperCase().replace(/-/g, '_')}`];
-    if (override !== undefined && /^\d+$/.test(override) && BigInt(override) > 0n) return BigInt(override);
-    return DEFAULT_CONFIRMATIONS[network] ?? 1n;
+  private requiredConfirmations(invoice: OpenInvoice, network: string): number {
+    // The count fixed at coin selection wins, so a later config change never moves the goalposts.
+    return invoice.required_confirmations ?? requiredConfirmations(network, this.env);
   }
 
   private family(network: string): AssetDefinition['family'] | undefined {
@@ -391,7 +383,7 @@ export class ChainScanner {
     const totals = await client.query<{ total: string; confirmations_met: boolean }>(
       `SELECT coalesce(sum(amount_base_units::numeric), 0)::text AS total,
        coalesce(bool_and(confirmations >= $2::bigint), false) AS confirmations_met
-       FROM invoice_payments WHERE invoice_id = $1`, [invoice.id, this.requiredConfirmations(network).toString()],
+       FROM invoice_payments WHERE invoice_id = $1`, [invoice.id, this.requiredConfirmations(invoice, network).toString()],
     );
     const total = BigInt(totals.rows[0]!.total);
     if (total === 0n) return;
@@ -406,7 +398,7 @@ export class ChainScanner {
     if (updated.status !== invoice.status) {
       this.log.info('invoice status changed', { invoice: invoice.id, from: invoice.status, to: updated.status });
       if (invoice.status === 'awaiting_payment') await enqueueInvoiceEvent(client, this.catalog, invoice.id, 'invoice.detected');
-      if (['paid', 'underpaid', 'overpaid', 'late_payment'].includes(updated.status)) {
+      if (['confirming', 'paid', 'underpaid', 'overpaid', 'late_payment'].includes(updated.status)) {
         await enqueueInvoiceEvent(client, this.catalog, invoice.id, `invoice.${updated.status}`);
       }
       if (updated.status === 'paid' && updated.surplusBaseUnits > 0n && invoice.status !== 'overpaid') {

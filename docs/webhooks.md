@@ -32,6 +32,7 @@ Every event body is `{ "event": "...", "created_at": "...", "invoice": { ...invo
 | --- | --- |
 | `invoice.created` | Invoice created through the API or dashboard |
 | `invoice.detected` | First transfer seen, not yet confirmed |
+| `invoice.confirming` | Full amount seen, waiting for `required_confirmations`; `invoice.confirmations` shows progress |
 | `invoice.underpaid` | Less than the quoted amount arrived |
 | `invoice.overpaid` | More than the quoted amount arrived |
 | `invoice.paid` | Full amount confirmed: fulfil the order |

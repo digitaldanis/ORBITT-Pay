@@ -57,6 +57,7 @@ export const invoices = pgTable('invoices', {
   address: text('address'),
   addressMode: varchar('address_mode', { length: 16 }).notNull().default('derived'),
   paymentSelectedAt: timestamp('payment_selected_at', { withTimezone: true }),
+  requiredConfirmations: integer('required_confirmations'),
   derivationPath: text('derivation_path'),
   successUrl: text('success_url'),
   cancelUrl: text('cancel_url'),

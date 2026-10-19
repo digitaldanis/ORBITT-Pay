@@ -23,14 +23,21 @@ export interface InvoiceRow {
   created_at: Date;
   updated_at: Date;
   metadata: Record<string, unknown>;
+  required_confirmations: number | null;
+  /** Lowest confirmation count among the invoice's transfers; null before any transfer. */
+  confirmations: string | null;
 }
 
 export const INVOICE_COLUMNS = `id, merchant_id, order_id, request_amount, request_currency, rate_used,
   crypto_amount, crypto_amount_base_units, received_amount_base_units, surplus_base_units,
-  asset, network, address, address_mode, status, expires_at, created_at, updated_at, metadata`;
+  asset, network, address, address_mode, status, expires_at, created_at, updated_at, metadata, required_confirmations,
+  (SELECT min(p.confirmations)::text FROM invoice_payments p WHERE p.invoice_id = invoices.id) AS confirmations`;
 
 /** Same columns, qualified with the `i.` alias for joins. */
-export const INVOICE_COLUMNS_I = INVOICE_COLUMNS.split(',').map((column) => `i.${column.trim()}`).join(', ');
+export const INVOICE_COLUMNS_I = `i.id, i.merchant_id, i.order_id, i.request_amount, i.request_currency, i.rate_used,
+  i.crypto_amount, i.crypto_amount_base_units, i.received_amount_base_units, i.surplus_base_units,
+  i.asset, i.network, i.address, i.address_mode, i.status, i.expires_at, i.created_at, i.updated_at, i.metadata, i.required_confirmations,
+  (SELECT min(p.confirmations)::text FROM invoice_payments p WHERE p.invoice_id = i.id) AS confirmations`;
 
 export interface InvoiceResource {
   id: string;
@@ -46,6 +53,10 @@ export interface InvoiceResource {
   received_amount: string;
   surplus_amount: string;
   exchange_rate: string | null;
+  /** Confirmations seen on the least-confirmed transfer; null until a transfer is seen. */
+  confirmations: number | null;
+  /** Confirmations needed before the invoice is paid; null until a coin is chosen. */
+  required_confirmations: number | null;
   expires_at: string;
   created_at: string;
   updated_at: string;
@@ -74,6 +85,8 @@ export function serializeInvoice(row: InvoiceRow, catalog: readonly AssetDefinit
     received_amount: format(row.received_amount_base_units),
     surplus_amount: format(row.surplus_base_units),
     exchange_rate: row.rate_used,
+    confirmations: row.confirmations === null ? null : Number(row.confirmations),
+    required_confirmations: row.required_confirmations,
     expires_at: row.expires_at.toISOString(),
     created_at: row.created_at.toISOString(),
     updated_at: row.updated_at.toISOString(),

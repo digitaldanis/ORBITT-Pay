@@ -8,7 +8,7 @@ const invoice: InvoiceRecord = {
   id: '0b9678da-f39f-4b3f-a74e-624eaa36d8bd', order_id: null, amount: '25.00', currency: 'EUR',
   crypto_amount: '0.00025', asset: 'BTC', network: 'bitcoin', address: 'bc1qexample', status: 'awaiting_payment',
   checkout_url: 'https://pay.example.test/i/0b9678da-f39f-4b3f-a74e-624eaa36d8bd',
-  received_amount: '0', surplus_amount: '0', exchange_rate: '100000',
+  received_amount: '0', surplus_amount: '0', exchange_rate: '100000', confirmations: null, required_confirmations: 2,
   expires_at: '2026-10-19T11:00:00.000Z', created_at: '2026-10-19T10:45:00.000Z', updated_at: '2026-10-19T10:45:00.000Z', metadata: {},
 };
 
@@ -17,7 +17,7 @@ function mockServices(): ApiServices {
     authenticateKey: async (hash) => hash === hashApiKey(secret) ? merchant : null,
     createInvoice: async () => invoice,
     getInvoice: async () => invoice,
-    getInvoiceDetail: async () => ({ invoice, payments: [], webhooks: [] }),
+    getInvoiceDetail: async () => ({ invoice, derivation_path: null, payments: [], webhooks: [] }),
     getPublicInvoice: async () => null,
     selectPublicPayment: async () => null,
     cancelPublicInvoice: async () => null,
@@ -95,6 +95,7 @@ describe('merchant API', () => {
       asset: 'BTC', asset_name: 'Bitcoin', asset_decimals: 8, network: 'bitcoin', network_name: 'Bitcoin', token_contract: null, address: 'bc1qexample', address_mode: 'derived',
       received_amount: '0', remaining_amount: '0.00025', status: 'awaiting_payment',
       created_at: invoice.created_at, expires_at: invoice.expires_at, success_url: null, cancel_url: null, payment_options: [],
+      confirmations: null, required_confirmations: 2, confirmation_eta_seconds: null, transactions: [],
     });
     const app = await buildServer(services, { logger: false });
     const response = await app.inject({ method: 'GET', url: `/v1/public/invoices/${invoice.id}` });

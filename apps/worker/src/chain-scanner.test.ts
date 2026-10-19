@@ -5,7 +5,7 @@ const invoice = (status: OpenInvoice['status'] = 'awaiting_payment'): OpenInvoic
   id: 'invoice-1', merchant_id: 'merchant-1', crypto_amount_base_units: '1000',
   received_amount_base_units: '0', surplus_base_units: '0', asset: 'BTC', network: 'bitcoin',
   address: 'bc1qexample', address_mode: 'derived', status, expires_at: new Date('2026-10-20T00:00:00.000Z'),
-  created_at: new Date('2026-10-19T00:00:00.000Z'), payment_selected_at: new Date('2026-10-19T12:00:00.000Z'),
+  created_at: new Date('2026-10-19T00:00:00.000Z'), payment_selected_at: new Date('2026-10-19T12:00:00.000Z'), required_confirmations: 2,
 });
 
 const transfer = (observedAt: string, blockNumber: bigint | null = 100n) => ({
