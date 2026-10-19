@@ -23,3 +23,4 @@ The repository starts as an npm workspace monorepo. Applications and packages ar
 - Database: PostgreSQL with Drizzle ORM and SQL migrations.
 - Queue and scheduling: pg-boss, using PostgreSQL to reduce infrastructure moving parts.
 - Exchange rates are expressed as fiat major units per one crypto unit; conversions divide fiat value by that rate and round the required base-unit amount upward.
+- Initial rate sources: CoinGecko Simple Price with Kraken public ticker fallback. Cache for 20 seconds and reject source data older than 120 seconds by default.

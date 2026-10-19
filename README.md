@@ -4,7 +4,7 @@
 
 **Payments for every chain.** ORBITT PAY is a planned self-hosted, non-custodial crypto payment processor for online shops. Merchants configure public wallet keys or addresses; the service creates invoices, watches for payments, and sends signed webhooks.
 
-> Project status: initial repository setup. Invoice processing and chain integrations are not implemented yet.
+> Project status: core money and invoice logic, public address derivation, PostgreSQL schema, and two-source rate quotes are implemented. The merchant API, checkout, dashboard, and chain watchers are still in progress.
 
 ## Design principles
 

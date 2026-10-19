@@ -1,0 +1,9 @@
+{
+  "BTC": { "coingeckoId": "bitcoin", "krakenPairs": { "EUR": "XBTEUR", "USD": "XBTUSD" } },
+  "ETH": { "coingeckoId": "ethereum", "krakenPairs": { "EUR": "ETHEUR", "USD": "ETHUSD" } },
+  "LTC": { "coingeckoId": "litecoin", "krakenPairs": { "EUR": "LTCEUR", "USD": "LTCUSD" } },
+  "SOL": { "coingeckoId": "solana", "krakenPairs": { "EUR": "SOLEUR", "USD": "SOLUSD" } },
+  "TRX": { "coingeckoId": "tron" },
+  "USDT": { "coingeckoId": "tether" },
+  "USDC": { "coingeckoId": "usd-coin" }
+}
