@@ -3,7 +3,9 @@
   "ETH": { "coingeckoId": "ethereum", "krakenPairs": { "EUR": "ETHEUR", "USD": "ETHUSD" } },
   "LTC": { "coingeckoId": "litecoin", "krakenPairs": { "EUR": "LTCEUR", "USD": "LTCUSD" } },
   "SOL": { "coingeckoId": "solana", "krakenPairs": { "EUR": "SOLEUR", "USD": "SOLUSD" } },
-  "TRX": { "coingeckoId": "tron" },
-  "USDT": { "coingeckoId": "tether" },
-  "USDC": { "coingeckoId": "usd-coin" }
+  "POL": { "coingeckoId": "polygon-ecosystem-token", "krakenPairs": { "EUR": "POLEUR", "USD": "POLUSD" } },
+  "BNB": { "coingeckoId": "binancecoin", "krakenPairs": { "EUR": "BNBEUR", "USD": "BNBUSD" } },
+  "TRX": { "coingeckoId": "tron", "krakenPairs": { "EUR": "TRXEUR", "USD": "TRXUSD" } },
+  "USDT": { "coingeckoId": "tether", "krakenPairs": { "EUR": "USDTEUR", "USD": "USDTZUSD" } },
+  "USDC": { "coingeckoId": "usd-coin", "krakenPairs": { "EUR": "USDCEUR", "USD": "USDCUSD" } }
 }

@@ -1,12 +1,36 @@
 [
-  { "asset": "BTC", "network": "bitcoin", "family": "utxo", "decimals": 8, "enabled": true, "derivation_asset": "BTC", "derivation_network": "mainnet" },
-  { "asset": "BTC", "network": "bitcoin-testnet", "family": "utxo", "decimals": 8, "enabled": false, "derivation_asset": "BTC", "derivation_network": "testnet" },
-  { "asset": "LTC", "network": "litecoin", "family": "utxo", "decimals": 8, "enabled": true, "derivation_asset": "LTC", "derivation_network": "mainnet" },
-  { "asset": "ETH", "network": "ethereum", "family": "evm", "decimals": 18, "enabled": true },
-  { "asset": "ETH", "network": "ethereum-sepolia", "family": "evm", "decimals": 18, "enabled": false },
-  { "asset": "ETH", "network": "base", "family": "evm", "decimals": 18, "enabled": true },
-  { "asset": "ETH", "network": "arbitrum", "family": "evm", "decimals": 18, "enabled": true },
-  { "asset": "ETH", "network": "optimism", "family": "evm", "decimals": 18, "enabled": true },
-  { "asset": "ETH", "network": "polygon", "family": "evm", "decimals": 18, "enabled": true },
-  { "asset": "ETH", "network": "bnb-chain", "family": "evm", "decimals": 18, "enabled": true }
+  { "asset": "BTC", "network": "bitcoin", "family": "utxo", "decimals": 8, "enabled": true, "name": "Bitcoin", "network_name": "Bitcoin", "derivation_asset": "BTC", "derivation_network": "mainnet" },
+  { "asset": "BTC", "network": "bitcoin-testnet", "family": "utxo", "decimals": 8, "enabled": false, "name": "Bitcoin", "network_name": "Bitcoin Testnet", "derivation_asset": "BTC", "derivation_network": "testnet" },
+  { "asset": "LTC", "network": "litecoin", "family": "utxo", "decimals": 8, "enabled": true, "name": "Litecoin", "network_name": "Litecoin", "derivation_asset": "LTC", "derivation_network": "mainnet" },
+
+  { "asset": "ETH", "network": "ethereum", "family": "evm", "decimals": 18, "enabled": true, "name": "Ether", "network_name": "Ethereum" },
+  { "asset": "USDT", "network": "ethereum", "family": "evm", "decimals": 6, "enabled": true, "name": "Tether USD", "network_name": "Ethereum", "contract": "0xdAC17F958D2ee523a2206206994597C13D831ec7", "wallet_asset": "ETH" },
+  { "asset": "USDC", "network": "ethereum", "family": "evm", "decimals": 6, "enabled": true, "name": "USD Coin", "network_name": "Ethereum", "contract": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "wallet_asset": "ETH" },
+  { "asset": "ETH", "network": "ethereum-sepolia", "family": "evm", "decimals": 18, "enabled": false, "name": "Ether", "network_name": "Sepolia" },
+
+  { "asset": "ETH", "network": "base", "family": "evm", "decimals": 18, "enabled": true, "name": "Ether", "network_name": "Base" },
+  { "asset": "USDC", "network": "base", "family": "evm", "decimals": 6, "enabled": true, "name": "USD Coin", "network_name": "Base", "contract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "wallet_asset": "ETH" },
+
+  { "asset": "ETH", "network": "arbitrum", "family": "evm", "decimals": 18, "enabled": true, "name": "Ether", "network_name": "Arbitrum One" },
+  { "asset": "USDT", "network": "arbitrum", "family": "evm", "decimals": 6, "enabled": true, "name": "Tether USD", "network_name": "Arbitrum One", "contract": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", "wallet_asset": "ETH" },
+  { "asset": "USDC", "network": "arbitrum", "family": "evm", "decimals": 6, "enabled": true, "name": "USD Coin", "network_name": "Arbitrum One", "contract": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", "wallet_asset": "ETH" },
+
+  { "asset": "ETH", "network": "optimism", "family": "evm", "decimals": 18, "enabled": true, "name": "Ether", "network_name": "OP Mainnet" },
+  { "asset": "USDT", "network": "optimism", "family": "evm", "decimals": 6, "enabled": true, "name": "Tether USD", "network_name": "OP Mainnet", "contract": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58", "wallet_asset": "ETH" },
+  { "asset": "USDC", "network": "optimism", "family": "evm", "decimals": 6, "enabled": true, "name": "USD Coin", "network_name": "OP Mainnet", "contract": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", "wallet_asset": "ETH" },
+
+  { "asset": "POL", "network": "polygon", "family": "evm", "decimals": 18, "enabled": true, "name": "Polygon", "network_name": "Polygon PoS" },
+  { "asset": "USDT", "network": "polygon", "family": "evm", "decimals": 6, "enabled": true, "name": "Tether USD", "network_name": "Polygon PoS", "contract": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", "wallet_asset": "POL" },
+  { "asset": "USDC", "network": "polygon", "family": "evm", "decimals": 6, "enabled": true, "name": "USD Coin", "network_name": "Polygon PoS", "contract": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", "wallet_asset": "POL" },
+
+  { "asset": "BNB", "network": "bnb-chain", "family": "evm", "decimals": 18, "enabled": true, "name": "BNB", "network_name": "BNB Smart Chain" },
+  { "asset": "USDT", "network": "bnb-chain", "family": "evm", "decimals": 18, "enabled": true, "name": "Tether USD", "network_name": "BNB Smart Chain", "contract": "0x55d398326f99059fF775485246999027B3197955", "wallet_asset": "BNB" },
+  { "asset": "USDC", "network": "bnb-chain", "family": "evm", "decimals": 18, "enabled": true, "name": "USD Coin", "network_name": "BNB Smart Chain", "contract": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", "wallet_asset": "BNB" },
+
+  { "asset": "TRX", "network": "tron", "family": "tron", "decimals": 6, "enabled": true, "name": "TRON", "network_name": "TRON" },
+  { "asset": "USDT", "network": "tron", "family": "tron", "decimals": 6, "enabled": true, "name": "Tether USD", "network_name": "TRON (TRC-20)", "contract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "wallet_asset": "TRX" },
+
+  { "asset": "SOL", "network": "solana", "family": "solana", "decimals": 9, "enabled": true, "name": "Solana", "network_name": "Solana", "max_offset_base_units": "99999" },
+  { "asset": "USDC", "network": "solana", "family": "solana", "decimals": 6, "enabled": true, "name": "USD Coin", "network_name": "Solana", "contract": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "wallet_asset": "SOL", "max_offset_base_units": "9999" },
+  { "asset": "USDT", "network": "solana", "family": "solana", "decimals": 6, "enabled": true, "name": "Tether USD", "network_name": "Solana", "contract": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "wallet_asset": "SOL", "max_offset_base_units": "9999" }
 ]

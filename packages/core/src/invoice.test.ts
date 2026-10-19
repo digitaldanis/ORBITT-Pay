@@ -35,3 +35,20 @@ describe('invoice status machine', () => {
     expect(expireInvoice(detected)).toBe(detected);
   });
 });
+
+describe('payments after expiry', () => {
+  it('does not flag re-observed pre-expiry transfers as late payments', () => {
+    const expired: Invoice = { ...sample, status: 'expired', receivedAmountBaseUnits: 10_000n };
+    expect(recordPayment(expired, 10_000n, true).status).toBe('expired');
+    const late = recordPayment(expired, 12_000n, true);
+    expect(late.status).toBe('late_payment');
+    expect(late.receivedAmountBaseUnits).toBe(12_000n);
+  });
+
+  it('keeps paid invoices paid while recording surplus', () => {
+    const paid: Invoice = { ...sample, status: 'paid', receivedAmountBaseUnits: 33_334n };
+    const updated = recordPayment(paid, 40_000n, true);
+    expect(updated.status).toBe('paid');
+    expect(updated.surplusBaseUnits).toBe(6_666n);
+  });
+});

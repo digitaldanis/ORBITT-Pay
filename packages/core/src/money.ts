@@ -59,3 +59,26 @@ export function formatBaseUnits(amount: bigint, decimals: number): string {
   const fraction = remainder.toString().padStart(decimals, '0').replace(/0+$/, '');
   return `${whole}.${fraction}`;
 }
+
+/**
+ * Picks a unique payable amount for shared-address invoices: `base + offset`, where the offset
+ * is in [1, maxOffset] and the result is not already reserved by another open invoice. The
+ * offset is random so amounts are not predictable from invoice order.
+ */
+export function pickUniqueAmount(
+  baseUnits: bigint,
+  maxOffset: bigint,
+  reserved: ReadonlySet<bigint>,
+  random: (maxExclusive: bigint) => bigint,
+): bigint {
+  if (baseUnits <= 0n) throw new RangeError('base amount must be positive');
+  if (maxOffset < 1n) throw new RangeError('maxOffset must be at least 1');
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    const candidate = baseUnits + 1n + random(maxOffset);
+    if (!reserved.has(candidate)) return candidate;
+  }
+  for (let offset = 1n; offset <= maxOffset; offset += 1n) {
+    if (!reserved.has(baseUnits + offset)) return baseUnits + offset;
+  }
+  throw new RangeError('no unique amount is available; too many open invoices share this address');
+}

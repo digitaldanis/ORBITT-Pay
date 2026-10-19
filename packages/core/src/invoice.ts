@@ -88,8 +88,19 @@ export function recordPayment(
   confirmationsMet: boolean,
   at: Date = new Date(),
 ): Invoice {
+  const withTotals = (target: Invoice): Invoice => ({
+    ...target,
+    receivedAmountBaseUnits: cumulativeReceivedBaseUnits,
+    surplusBaseUnits: cumulativeReceivedBaseUnits > invoice.cryptoAmountBaseUnits
+      ? cumulativeReceivedBaseUnits - invoice.cryptoAmountBaseUnits
+      : 0n,
+  });
+  if (invoice.status === 'paid' || invoice.status === 'late_payment') return withTotals(invoice);
   if (invoice.status === 'expired' || invoice.status === 'cancelled') {
-    return transitionInvoice(invoice, 'late_payment', at);
+    // Re-observing transfers that were already counted before expiry (for example a short
+    // payment whose confirmations are refreshed) is not a late payment. Only new funds are.
+    if (cumulativeReceivedBaseUnits <= invoice.receivedAmountBaseUnits) return invoice;
+    return withTotals(transitionInvoice(invoice, 'late_payment', at));
   }
   const activeInvoice = invoice.status === 'awaiting_payment'
     ? transitionInvoice(invoice, 'detected', at)
@@ -102,14 +113,7 @@ export function recordPayment(
       : disposition === 'overpaid'
         ? 'overpaid'
         : 'confirming';
-  const updated = transitionInvoice(activeInvoice, status, at);
-  return {
-    ...updated,
-    receivedAmountBaseUnits: cumulativeReceivedBaseUnits,
-    surplusBaseUnits: cumulativeReceivedBaseUnits > invoice.cryptoAmountBaseUnits
-      ? cumulativeReceivedBaseUnits - invoice.cryptoAmountBaseUnits
-      : 0n,
-  };
+  return withTotals(transitionInvoice(activeInvoice, status, at));
 }
 
 export function expireInvoice(invoice: Invoice, at: Date = new Date()): Invoice {
