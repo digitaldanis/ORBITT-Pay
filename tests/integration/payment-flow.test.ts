@@ -226,6 +226,65 @@ describe.skipIf(!databaseUrl)('payment flow (PostgreSQL)', () => {
     expect(await services.verifyAuditLog(merchant)).toMatchObject({ intact: false, broken_at: target });
   });
 
+  it('runs a team: invitations, roles, the last owner, passwords and sessions', async () => {
+    const { hash, Algorithm } = await import('@node-rs/argon2');
+    const passwordHash = await hash('owner password 123', { algorithm: Algorithm.Argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1, outputLen: 32 });
+    await pool.query("INSERT INTO merchant_users (merchant_id, email, password_hash, role) VALUES ($1, 'owner@orbit.store', $2, 'owner')", [merchant.id, passwordHash]);
+    const client = { ip: '198.51.100.4', userAgent: 'Vitest' };
+    const login = (await services.loginDashboard('Owner@Orbit.Store', 'owner password 123', client))!;
+    expect(login.user).toMatchObject({ email: 'owner@orbit.store', role: 'owner' });
+    const ownerSession = (await services.authenticateDashboardSession(login.sessionToken))!;
+    expect(ownerSession.user.role).toBe('owner');
+
+    const invitation = await services.createInvitation(ownerSession, 'Admin@Orbit.Store', 'admin');
+    expect(invitation.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(await services.getInvitation(invitation.token)).toMatchObject({ merchant_name: 'Orbit Store', email: 'admin@orbit.store', role: 'admin' });
+    const joined = await services.acceptInvitation(invitation.token, { name: 'Ada Admin', password: 'admin password 123' }, client);
+    expect(joined.user).toMatchObject({ email: 'admin@orbit.store', role: 'admin', name: 'Ada Admin' });
+    await expect(services.acceptInvitation(invitation.token, { name: 'Again', password: 'admin password 123' })).rejects.toMatchObject({ code: 'invitation_not_found' });
+    const adminSession = (await services.authenticateDashboardSession(joined.sessionToken))!;
+
+    // Admins manage members below owner, but cannot create or touch owners.
+    await expect(services.createInvitation(adminSession, 'boss@orbit.store', 'owner')).rejects.toMatchObject({ code: 'insufficient_role' });
+    await expect(services.updateMember(adminSession, ownerSession.user.id, { disabled: true })).rejects.toMatchObject({ code: 'insufficient_role' });
+    await expect(services.updateMember(adminSession, adminSession.user.id, { role: 'viewer' })).rejects.toMatchObject({ code: 'cannot_change_self' });
+    await expect(services.createInvitation(ownerSession, 'admin@orbit.store', 'viewer')).rejects.toMatchObject({ code: 'email_in_use' });
+
+    // Once there is a second owner the first can step down; a developer can no longer touch owners.
+    await services.updateMember(ownerSession, adminSession.user.id, { role: 'owner' });
+    const promoted = (await services.authenticateDashboardSession(joined.sessionToken))!;
+    expect(promoted.user.role).toBe('owner');
+    await services.updateMember(promoted, ownerSession.user.id, { role: 'developer' });
+    await expect(services.updateMember((await services.authenticateDashboardSession(login.sessionToken))!, promoted.user.id, { role: 'admin' }))
+      .rejects.toMatchObject({ code: 'insufficient_role' });
+    const demoted = (await services.authenticateDashboardSession(login.sessionToken))!;
+    expect(demoted.user.role).toBe('developer');
+
+    // Disabling a member ends their sessions at once.
+    await services.updateMember(promoted, demoted.user.id, { disabled: true });
+    expect(await services.authenticateDashboardSession(login.sessionToken)).toBeNull();
+    expect(await services.loginDashboard('owner@orbit.store', 'owner password 123')).toBeNull();
+    const team = await services.listTeam(promoted);
+    expect(team.members.map((member) => [member.email, member.role, member.status])).toEqual([
+      ['admin@orbit.store', 'owner', 'active'], ['owner@orbit.store', 'developer', 'disabled'],
+    ]);
+
+    // A password change keeps the current session and signs out the others.
+    const second = (await services.loginDashboard('admin@orbit.store', 'admin password 123', { ip: '203.0.113.9', userAgent: 'Phone' }))!;
+    expect((await services.listSessions(promoted)).map((item) => item.current).sort()).toEqual([false, true]);
+    expect(await services.changePassword(promoted, 'wrong password', 'next password 1234')).toBe(false);
+    expect(await services.changePassword(promoted, 'admin password 123', 'next password 1234')).toBe(true);
+    expect(await services.authenticateDashboardSession(second.sessionToken)).toBeNull();
+    expect(await services.authenticateDashboardSession(joined.sessionToken)).not.toBeNull();
+    expect(await services.loginDashboard('admin@orbit.store', 'next password 1234')).not.toBeNull();
+    expect(await services.revokeOtherSessions(promoted)).toBe(1);
+
+    expect((await services.renameWorkspace(promoted, ' Orbit Store GmbH ')).name).toBe('Orbit Store GmbH');
+    const actions = (await services.listAuditLog(merchant, { limit: 100, action: 'team' })).data.map((entry) => entry.action);
+    expect(actions).toEqual(expect.arrayContaining(['team.invited', 'team.joined', 'team.role_changed', 'team.member_disabled']));
+    await pool.query("UPDATE merchants SET name = 'Orbit Store' WHERE id = $1", [merchant.id]);
+  });
+
   it('removes expired idempotency keys and old sessions', async () => {
     await pool.query("UPDATE idempotency_keys SET expires_at = now() - interval '1 minute' WHERE key = 'late-1'");
     await new Maintenance(pool).runOnce();

@@ -5,6 +5,7 @@ import { formatFiat } from '../format.js';
 import { Banner, Loading, PageHeader, useResource } from '../ui.js';
 import { CreateLinkModal, InvoiceTable } from './invoices.js';
 import type { Page } from '../Dashboard.js';
+import { useSession } from '../session.js';
 
 interface Day { day: string; amount: number; count: number }
 
@@ -69,6 +70,7 @@ function SetupChecklist({ account, keys, go }: { account: Account | null; keys: 
 }
 
 export function OverviewPage({ account, go, onOpen, refreshKey, onCreated }: { account: Account | null; go: (page: Page) => void; onOpen: (id: string) => void; refreshKey: number; onCreated: () => void }) {
+  const { can } = useSession();
   // refreshKey is a dependency only so that a new value re-runs the load.
   const load = useCallback(() => api<Overview>('/v1/dashboard/overview'), [refreshKey]);
   const { data, error } = useResource(load, 'Dashboard data could not be loaded.');
@@ -89,7 +91,7 @@ export function OverviewPage({ account, go, onOpen, refreshKey, onCreated }: { a
 
   return <>
     <PageHeader title="Overview" description={`Welcome back to ${account?.merchant.name ?? 'your workspace'}.`}>
-      <button className="primary-button" onClick={() => setCreating(true)}><Plus size={15} />New payment link</button>
+      {can('payments') && <button className="primary-button" onClick={() => setCreating(true)}><Plus size={15} />New payment link</button>}
     </PageHeader>
     <SetupChecklist account={account} keys={keys.data} go={go} />
     <div className="stats-grid">
