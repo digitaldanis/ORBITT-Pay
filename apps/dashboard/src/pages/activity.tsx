@@ -8,6 +8,16 @@ const ACTION_LABELS: Record<string, string> = {
   'user.signed_in': 'Signed in',
   'user.sign_in_failed': 'Failed sign-in',
   'user.signed_out': 'Signed out',
+  'user.password_changed': 'Password changed',
+  'user.session_revoked': 'Session signed out',
+  'user.sessions_revoked': 'Other sessions signed out',
+  'team.invited': 'Member invited',
+  'team.invitation_revoked': 'Invitation revoked',
+  'team.joined': 'Member joined',
+  'team.role_changed': 'Role changed',
+  'team.member_disabled': 'Member disabled',
+  'team.member_enabled': 'Member enabled',
+  'workspace.renamed': 'Workspace renamed',
   'api_key.created': 'API key created',
   'api_key.revoked': 'API key revoked',
   'wallet.added': 'Wallet added',
@@ -22,7 +32,7 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 const FILTERS: Array<{ label: string; action: string }> = [
-  { label: 'All', action: '' }, { label: 'Sign-ins', action: 'user' }, { label: 'API keys', action: 'api_key' },
+  { label: 'All', action: '' }, { label: 'Sign-ins', action: 'user' }, { label: 'Team', action: 'team' }, { label: 'API keys', action: 'api_key' },
   { label: 'Wallets', action: 'wallet' }, { label: 'Webhooks', action: 'webhook' }, { label: 'Invoices', action: 'invoice' },
 ];
 
@@ -44,6 +54,10 @@ function summary(entry: AuditEntry): string {
     case 'invoice.created': return `${text('amount')} ${text('currency')}${text('order_id') ? ` · ${text('order_id')}` : ''}`;
     case 'invoice.cancelled': return text('order_id') || (entry.target?.id.slice(0, 8) ?? '');
     case 'user.sign_in_failed': return text('reason') === 'disabled' ? 'Account disabled' : 'Wrong password';
+    case 'team.invited': case 'team.invitation_revoked': case 'team.joined': return `${text('email')} · ${text('role')}`;
+    case 'team.role_changed': return `${text('email')} · ${text('from')} → ${text('to')}`;
+    case 'team.member_disabled': case 'team.member_enabled': return text('email');
+    case 'workspace.renamed': return `${text('from')} → ${text('to')}`;
     default: return '';
   }
 }
@@ -105,7 +119,7 @@ export function ActivityPage({ onOpenInvoice }: { onOpenInvoice: (id: string) =>
   };
 
   return <>
-    <PageHeader title="Activity" description="Every change to keys, wallets, webhooks and sign-ins, in an append-only log." />
+    <PageHeader title="Activity" description="Every change to the team, keys, wallets, webhooks and sign-ins, in an append-only log." />
     <ChainStatus />
     <section className="panel">
       <div className="toolbar">

@@ -31,7 +31,8 @@ The dashboard is the React app in `apps/dashboard`. It uses server-side sessions
 On EVM chains and TRON every invoice has its own address, so moving USDT or USDC out needs a little native coin (ETH, POL, BNB, TRX) on that address for the fee. Bitcoin wallets stop looking after 20 unused addresses in a row; raise the gap limit (for example in Sparrow) if many invoices expired unpaid.
 - **Webhooks:** recent deliveries with HTTP status, attempts and next retry; retry failed events and send test events.
 - **API keys:** create keys (shown once) and revoke them.
-- **Settings:** webhook endpoint and signing-secret rotation, account and security overview.
+- **Team:** members with their role and last sign-in, invitation links, role changes and disabling members (see [Team and roles](#team-and-roles)).
+- **Settings:** workspace name (owners), webhook endpoint and signing-secret rotation, password change, your active sessions (device, IP, last activity) with sign-out per session or for all others, and a security overview.
 
 ## Audit log
 
@@ -44,6 +45,19 @@ npm run audit:verify --workspace apps/api -- <merchant-uuid>
 
 Invoices created through the API are not audited one by one (their status history is kept in `invoice_status_history`); payment links created by a dashboard user are.
 
+## Team and roles
+
+Everyone in a workspace can see every page. Roles decide who may change what, and the API checks them on every request, so a role change or a disabled member takes effect immediately, also in sessions that are already open.
+
+| Role | May change |
+| --- | --- |
+| Owner | Everything, including owners and the workspace name |
+| Admin | Wallets, team members below owner, API keys, webhooks, payment links |
+| Developer | API keys, webhooks, payment links and cancelling invoices |
+| Viewer | Nothing (read-only) |
+
+Owners and admins invite members on the Team page. The invitation link is valid for seven days, is shown once to the inviter, and only its SHA-256 hash is stored; a new invitation for the same email replaces the pending one. The invitee opens the link, sets a name and a password of at least 12 characters and is signed in. Members cannot change their own role or disable themselves, only owners can make or change owners, and the last active owner cannot be removed. Disabling a member signs them out everywhere. Changing your password signs out your other sessions. Every one of these actions is written to the audit log.
+
 ## Create the first dashboard user
 
 After creating a merchant and applying migrations, set `DASHBOARD_USER_PASSWORD` in the ignored `.env`, then run:
@@ -51,6 +65,8 @@ After creating a merchant and applying migrations, set `DASHBOARD_USER_PASSWORD`
 ```sh
 npm run dashboard:user:create --workspace apps/api -- <merchant-uuid> owner@example.com
 ```
+
+The user is an owner. Pass a role as third argument (`admin`, `developer` or `viewer`) to create someone else; usually it is easier to invite further members from the Team page.
 
 ## Run locally
 
