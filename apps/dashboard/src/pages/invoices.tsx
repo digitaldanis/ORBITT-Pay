@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { ArrowUpRight, ChevronRight, CreditCard, ExternalLink, Link2, Plus, RefreshCw, RotateCw, Search } from 'lucide-react';
 import { CoinIcon, explorerTransactionUrl } from '@orbitt/ui';
 import { api, errorMessage, OPEN_STATUSES, type Invoice, type InvoiceDetail } from '../api.js';
-import { dateLabel, formatFiat, middleTruncate, relativeTime } from '../format.js';
+import { dateLabel, formatFiat, middleTruncate, relativeTime, statusLabel, statusTone } from '../format.js';
 import { Banner, CopyButton, DetailRow, Drawer, EmptyState, Loading, Modal, PageHeader, StatusBadge, useResource } from '../ui.js';
 import { useCatalog } from '../catalog.js';
 
@@ -239,6 +239,18 @@ export function InvoiceDrawer({ id, onClose, onChanged }: { id: string; onClose:
           <DetailRow label={new Date(invoice.expires_at) < new Date() ? 'Expired' : 'Expires'}>{dateLabel(invoice.expires_at)}</DetailRow>
           <DetailRow label="Last update">{dateLabel(invoice.updated_at)}</DetailRow>
         </div>
+
+        {data.timeline.length > 0 && <>
+          <h3 className="section-title">Timeline</h3>
+          <ol className="timeline">
+            {data.timeline.map((entry, index) => (
+              <li key={`${entry.status}-${entry.at}-${index}`} className={`tone-dot-${statusTone(entry.status)}`}>
+                <div><strong>{statusLabel(entry.status)}</strong>{invoice.asset && amountDiffers(entry.received_amount) && <span className="mono">{entry.received_amount} {invoice.asset} received</span>}</div>
+                <time dateTime={entry.at} title={dateLabel(entry.at)}>{relativeTime(entry.at)}</time>
+              </li>
+            ))}
+          </ol>
+        </>}
 
         <h3 className="section-title">On-chain payments <span className="count">{data.payments.length}</span></h3>
         {!data.payments.length ? <p className="muted small-text">No transfer seen yet. The scanner checks every network continuously.</p> : (

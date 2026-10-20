@@ -39,7 +39,21 @@ export interface WebhookDelivery {
   next_attempt_at: string | null;
 }
 
-export interface InvoiceDetail { invoice: Invoice; derivation_path: string | null; payments: Payment[]; webhooks: WebhookDelivery[] }
+export interface TimelineEntry { status: InvoiceStatus; from_status: InvoiceStatus | null; received_amount: string; at: string }
+
+export interface InvoiceDetail { invoice: Invoice; timeline: TimelineEntry[]; derivation_path: string | null; payments: Payment[]; webhooks: WebhookDelivery[] }
+
+export interface AuditEntry {
+  id: string;
+  action: string;
+  actor: { type: 'user' | 'api_key' | 'system'; id: string | null; label: string | null };
+  target: { type: string; id: string } | null;
+  details: Record<string, unknown>;
+  ip: string | null;
+  created_at: string;
+}
+
+export interface AuditVerification { intact: boolean; entries: number; broken_at: string | null }
 
 export interface Wallet {
   asset: string;

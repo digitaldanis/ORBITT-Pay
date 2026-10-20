@@ -16,6 +16,7 @@ import { PostgresApiServices } from '../../apps/api/src/db/postgres-services.js'
 import { PostgresInvoicePreparer } from '../../apps/api/src/invoices/preparer.js';
 import { ChainScanner, type OpenInvoice } from '../../apps/worker/src/chain-scanner.js';
 import { WebhookWorker } from '../../apps/worker/src/webhook-worker.js';
+import { Maintenance } from '../../apps/worker/src/maintenance.js';
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const catalog = parseAssetCatalog(JSON.parse(readFileSync(new URL('../../config/assets.json', import.meta.url), 'utf8')));
@@ -116,6 +117,11 @@ describe.skipIf(!databaseUrl)('payment flow (PostgreSQL)', () => {
     expect(paid!.payments).toHaveLength(2);
     expect((await services.getPublicInvoice(created.id))!.confirmation_eta_seconds).toBeNull();
     expect(await events(created.id)).toEqual(['invoice.created', 'invoice.detected', 'invoice.underpaid', 'invoice.confirming', 'invoice.paid']);
+    expect(paid!.timeline.map((entry) => entry.status)).toEqual(['created', 'awaiting_payment', 'underpaid', 'confirming', 'paid']);
+    expect(paid!.timeline.at(2)).toMatchObject({ from_status: 'awaiting_payment', received_amount: '0.0002' });
+    const stamps = (await pool.query<{ paid_at: Date | null; closed_at: Date | null }>('SELECT paid_at, closed_at FROM invoices WHERE id = $1', [created.id])).rows[0]!;
+    expect(stamps.paid_at).toBeInstanceOf(Date);
+    expect(stamps.closed_at).toBeInstanceOf(Date);
   });
 
   it('delivers signed webhooks that verify with the merchant secret', async () => {
@@ -189,6 +195,37 @@ describe.skipIf(!databaseUrl)('payment flow (PostgreSQL)', () => {
     expect(await services.redeliverWebhook(merchant, deliveries[0]!.id as string)).toBe(true);
     const search = await services.listInvoices(merchant, { limit: 10, search: '1001' });
     expect(search.data).toHaveLength(1);
+  });
+
+  it('keeps a tamper-evident audit log of workspace changes', async () => {
+    const user = { ...merchant, actor: { type: 'user' as const, id: null, label: 'owner@orbit.store', ip: '203.0.113.7' } };
+    const key = await services.createDashboardApiKey(user, 'Audit test');
+    await services.revokeDashboardApiKey(user, key.id);
+    await services.setWebhook(user, null, false);
+    const log = await services.listAuditLog(merchant, { limit: 2 });
+    expect(log.data.map((entry) => entry.action)).toEqual(['webhook.updated', 'api_key.revoked']);
+    expect(log.data[1]).toMatchObject({ actor: { type: 'user', label: 'owner@orbit.store' }, ip: '203.0.113.7', target: { type: 'api_key', id: key.id } });
+    const older = await services.listAuditLog(merchant, { limit: 100, cursor: log.next_cursor! });
+    expect(older.data.map((entry) => entry.action)).toContain('api_key.created');
+    expect(older.data.map((entry) => entry.action)).toContain('wallet.added');
+    expect((await services.listAuditLog(merchant, { limit: 100, action: 'wallet' })).data.every((entry) => entry.action.startsWith('wallet.'))).toBe(true);
+
+    expect(await services.verifyAuditLog(merchant)).toMatchObject({ intact: true, broken_at: null });
+    await expect(pool.query("UPDATE audit_log SET action = 'x' WHERE merchant_id = $1", [merchant.id])).rejects.toThrow('append-only');
+    await expect(pool.query('DELETE FROM audit_log WHERE merchant_id = $1', [merchant.id])).rejects.toThrow('append-only');
+    // Someone with superuser rights who bypasses the trigger still breaks the chain.
+    const target = log.data[1]!.id;
+    await pool.query('ALTER TABLE audit_log DISABLE TRIGGER audit_log_immutable');
+    await pool.query(`UPDATE audit_log SET details = '{"name":"forged"}' WHERE id = $1`, [target]);
+    await pool.query('ALTER TABLE audit_log ENABLE TRIGGER audit_log_immutable');
+    expect(await services.verifyAuditLog(merchant)).toMatchObject({ intact: false, broken_at: target });
+  });
+
+  it('removes expired idempotency keys and old sessions', async () => {
+    await pool.query("UPDATE idempotency_keys SET expires_at = now() - interval '1 minute' WHERE key = 'late-1'");
+    await new Maintenance(pool).runOnce();
+    expect((await pool.query("SELECT 1 FROM idempotency_keys WHERE key = 'late-1'")).rowCount).toBe(0);
+    expect((await pool.query("SELECT 1 FROM idempotency_keys WHERE key = 'order-1001'")).rowCount).toBe(1);
   });
 
   it('pages through invoices created within the same millisecond without skipping any', async () => {

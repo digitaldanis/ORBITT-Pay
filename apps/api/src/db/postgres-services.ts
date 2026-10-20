@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
 import { hash as hashPassword, verify as verifyPassword, Algorithm } from '@node-rs/argon2';
 import type { Pool, PoolClient } from 'pg';
 import { isSolanaWalletAddress, parseAccountPublicKey } from '@orbitt/chains';
@@ -8,8 +9,8 @@ import { encryptSecret, enqueueInvoiceEvent } from '@orbitt/webhooks';
 import { createApiKey } from '../auth/api-key.js';
 import { ApiError } from '../errors.js';
 import type {
-  ApiServices, AssetRecord, CreateInvoiceInput, DashboardLogin, DashboardSession, InvoiceDetail, InvoiceListQuery,
-  InvoiceRecord, MerchantContext, PublicInvoiceRecord, WalletInput,
+  ApiServices, AssetRecord, AuditEntry, CreateInvoiceInput, DashboardLogin, DashboardSession, InvoiceDetail, InvoiceListQuery,
+  InvoiceRecord, InvoiceTimelineEntry, MerchantContext, PublicInvoiceRecord, WalletInput,
 } from '../server.js';
 
 export interface PaymentSelection {
@@ -76,6 +77,21 @@ function sha256Hex(value: string): string {
 
 const DUMMY_PASSWORD_HASH = hashPassword('invalid dashboard password placeholder', { algorithm: Algorithm.Argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1, outputLen: 32 });
 
+type Queryable = Pool | PoolClient;
+
+interface AuditTarget { type: string; id: string }
+
+/** Writes one audit entry; the database links it into the merchant's hash chain. */
+async function audit(db: Queryable, merchant: MerchantContext, action: string, target: AuditTarget | null = null, details: Record<string, unknown> = {}): Promise<void> {
+  const actor = merchant.actor ?? { type: 'system' as const, id: null, label: null };
+  const ip = actor.ip && isIP(actor.ip) ? actor.ip : null;
+  await db.query(
+    `INSERT INTO audit_log (merchant_id, actor_type, actor_id, actor_label, action, target_type, target_id, details, ip)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [merchant.id, actor.type, actor.id, actor.label, action, target?.type ?? null, target?.id ?? null, JSON.stringify(details), ip],
+  );
+}
+
 function assertWebhookUrl(value: string): void {
   let url: URL;
   try { url = new URL(value); } catch { throw new ApiError(400, 'invalid_webhook_url', 'Webhook URL must be a valid HTTP or HTTPS URL.', 'webhook_url'); }
@@ -114,17 +130,18 @@ export class PostgresApiServices implements ApiServices {
   }
 
   async authenticateKey(keyHash: string): Promise<MerchantContext | null> {
-    const result = await this.pool.query<MerchantContext>(
+    const result = await this.pool.query<{ id: string; name: string; key_id: string; key_prefix: string }>(
       `WITH used AS (
          UPDATE api_keys SET last_used_at = now()
-         WHERE key_hash = $1 AND revoked_at IS NULL RETURNING merchant_id
+         WHERE key_hash = $1 AND revoked_at IS NULL RETURNING id, merchant_id, key_prefix
        )
-       SELECT m.id, m.name FROM merchants m JOIN used ON used.merchant_id = m.id`, [keyHash],
+       SELECT m.id, m.name, used.id AS key_id, used.key_prefix FROM merchants m JOIN used ON used.merchant_id = m.id`, [keyHash],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    return row ? { id: row.id, name: row.name, actor: { type: 'api_key', id: row.key_id, label: `${row.key_prefix}…` } } : null;
   }
 
-  async loginDashboard(email: string, password: string): Promise<DashboardLogin | null> {
+  async loginDashboard(email: string, password: string, ip?: string): Promise<DashboardLogin | null> {
     const normalizedEmail = email.trim().toLowerCase();
     const userResult = await this.pool.query<{ user_id: string; merchant_id: string; email: string; password_hash: string; disabled_at: Date | null; merchant_name: string }>(
       `SELECT u.id AS user_id, u.merchant_id, u.email, u.password_hash, u.disabled_at, m.name AS merchant_name
@@ -134,6 +151,10 @@ export class PostgresApiServices implements ApiServices {
     let valid = false;
     try { valid = await verifyPassword(user?.password_hash ?? await DUMMY_PASSWORD_HASH, password); }
     catch { valid = false; }
+    if (user && (user.disabled_at || !valid)) {
+      await audit(this.pool, { id: user.merchant_id, name: user.merchant_name, actor: { type: 'user', id: user.user_id, label: user.email, ip: ip ?? null } },
+        'user.sign_in_failed', { type: 'user', id: user.user_id }, { reason: user.disabled_at ? 'disabled' : 'invalid_password' });
+    }
     if (!user || user.disabled_at || !valid) return null;
 
     const sessionToken = randomBytes(32).toString('base64url');
@@ -143,27 +164,31 @@ export class PostgresApiServices implements ApiServices {
        VALUES ($1, $2, $3, now() + interval '8 hours')`,
       [user.user_id, sha256Hex(sessionToken), sha256Hex(csrfToken)],
     );
-    // Opportunistic cleanup keeps the sessions table small without a separate job.
-    await this.pool.query(`DELETE FROM dashboard_sessions WHERE expires_at < now() - interval '7 days'`);
+    const merchant: MerchantContext = { id: user.merchant_id, name: user.merchant_name, actor: { type: 'user', id: user.user_id, label: user.email, ip: ip ?? null } };
+    await audit(this.pool, merchant, 'user.signed_in', { type: 'user', id: user.user_id });
     return { sessionToken, csrfToken, merchant: { id: user.merchant_id, name: user.merchant_name }, email: user.email };
   }
 
   async authenticateDashboardSession(sessionToken: string): Promise<DashboardSession | null> {
-    const result = await this.pool.query<{ id: string; name: string; email: string; csrf_hash: string }>(
-      `SELECT m.id, m.name, u.email, s.csrf_hash FROM dashboard_sessions s
+    const result = await this.pool.query<{ id: string; name: string; user_id: string; email: string; csrf_hash: string }>(
+      `SELECT m.id, m.name, u.id AS user_id, u.email, s.csrf_hash FROM dashboard_sessions s
        JOIN merchant_users u ON u.id = s.user_id JOIN merchants m ON m.id = u.merchant_id
        WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.disabled_at IS NULL`,
       [sha256Hex(sessionToken)],
     );
     const row = result.rows[0];
-    return row ? { merchant: { id: row.id, name: row.name }, email: row.email, csrfHash: row.csrf_hash } : null;
+    return row ? { merchant: { id: row.id, name: row.name, actor: { type: 'user', id: row.user_id, label: row.email } }, email: row.email, csrfHash: row.csrf_hash } : null;
   }
 
   async revokeDashboardSession(sessionToken: string): Promise<void> {
-    await this.pool.query(
-      'UPDATE dashboard_sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL',
+    const revoked = await this.pool.query<{ user_id: string; merchant_id: string; email: string }>(
+      `UPDATE dashboard_sessions s SET revoked_at = now() FROM merchant_users u
+       WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND u.id = s.user_id
+       RETURNING s.user_id, u.merchant_id, u.email`,
       [sha256Hex(sessionToken)],
     );
+    const row = revoked.rows[0];
+    if (row) await audit(this.pool, { id: row.merchant_id, name: '', actor: { type: 'user', id: row.user_id, label: row.email } }, 'user.signed_out', { type: 'user', id: row.user_id });
   }
 
   async getDashboardOverview(merchant: MerchantContext): Promise<Record<string, unknown>> {
@@ -173,13 +198,13 @@ export class PostgresApiServices implements ApiServices {
        count(*) FILTER (WHERE status IN ${OPEN_STATUSES})::int AS pending,
        count(*) FILTER (WHERE status = 'expired')::int AS expired,
        count(*) FILTER (WHERE status IN ('underpaid', 'late_payment') OR (status = 'paid' AND surplus_base_units <> '0'))::int AS attention,
-       count(*) FILTER (WHERE status = 'paid' AND updated_at >= date_trunc('day', now()))::int AS paid_today
+       count(*) FILTER (WHERE status = 'paid' AND paid_at >= date_trunc('day', now()))::int AS paid_today
        FROM invoices WHERE merchant_id = $1`, [merchant.id],
     );
     const volume = await this.pool.query<{ day: string; currency: string; amount: string; count: number }>(
-      `SELECT to_char(date_trunc('day', updated_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+      `SELECT to_char(date_trunc('day', paid_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
        request_currency AS currency, sum(request_amount::numeric)::text AS amount, count(*)::int AS count
-       FROM invoices WHERE merchant_id = $1 AND status = 'paid' AND updated_at > now() - interval '14 days'
+       FROM invoices WHERE merchant_id = $1 AND status = 'paid' AND paid_at > now() - interval '14 days'
        GROUP BY 1, 2 ORDER BY 1`, [merchant.id],
     );
     const recent = await this.listInvoices(merchant, { limit: 8 });
@@ -208,11 +233,16 @@ export class PostgresApiServices implements ApiServices {
   }
 
   async redeliverWebhook(merchant: MerchantContext, deliveryId: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE webhook_deliveries SET status = 'pending', next_attempt_at = now(), locked_until = NULL
-       WHERE merchant_id = $1 AND id = $2 AND status IN ('delivered', 'failed', 'pending')`, [merchant.id, deliveryId],
-    );
-    return result.rowCount === 1;
+    return this.transaction(async (client) => {
+      const result = await client.query<{ event_type: string; invoice_id: string | null }>(
+        `UPDATE webhook_deliveries SET status = 'pending', next_attempt_at = now(), locked_until = NULL
+         WHERE merchant_id = $1 AND id = $2 AND status IN ('delivered', 'failed', 'pending') RETURNING event_type, invoice_id`, [merchant.id, deliveryId],
+      );
+      const row = result.rows[0];
+      if (!row) return false;
+      await audit(client, merchant, 'webhook.redelivered', { type: 'webhook_delivery', id: deliveryId }, { event: row.event_type, invoice_id: row.invoice_id });
+      return true;
+    });
   }
 
   async listDashboardApiKeys(merchant: MerchantContext): Promise<Array<Record<string, unknown>>> {
@@ -231,19 +261,28 @@ export class PostgresApiServices implements ApiServices {
 
   async createDashboardApiKey(merchant: MerchantContext, name: string): Promise<{ id: string; name: string; key_prefix: string; secret: string }> {
     const key = createApiKey();
-    const result = await this.pool.query<{ id: string }>(
-      `INSERT INTO api_keys (merchant_id, name, key_hash, key_prefix) VALUES ($1, $2, $3, $4) RETURNING id`,
-      [merchant.id, name.trim(), key.hash, key.prefix],
-    );
-    return { id: result.rows[0]!.id, name: name.trim(), key_prefix: key.prefix, secret: key.secret };
+    return this.transaction(async (client) => {
+      const result = await client.query<{ id: string }>(
+        `INSERT INTO api_keys (merchant_id, name, key_hash, key_prefix) VALUES ($1, $2, $3, $4) RETURNING id`,
+        [merchant.id, name.trim(), key.hash, key.prefix],
+      );
+      const id = result.rows[0]!.id;
+      await audit(client, merchant, 'api_key.created', { type: 'api_key', id }, { name: name.trim(), key_prefix: key.prefix });
+      return { id, name: name.trim(), key_prefix: key.prefix, secret: key.secret };
+    });
   }
 
   async revokeDashboardApiKey(merchant: MerchantContext, id: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE api_keys SET revoked_at = now() WHERE merchant_id = $1 AND id = $2 AND revoked_at IS NULL`,
-      [merchant.id, id],
-    );
-    return result.rowCount === 1;
+    return this.transaction(async (client) => {
+      const result = await client.query<{ name: string; key_prefix: string }>(
+        `UPDATE api_keys SET revoked_at = now() WHERE merchant_id = $1 AND id = $2 AND revoked_at IS NULL RETURNING name, key_prefix`,
+        [merchant.id, id],
+      );
+      const row = result.rows[0];
+      if (!row) return false;
+      await audit(client, merchant, 'api_key.revoked', { type: 'api_key', id }, { name: row.name, key_prefix: row.key_prefix });
+      return true;
+    });
   }
 
   async createInvoice(merchant: MerchantContext, idempotencyKey: string, input: CreateInvoiceInput): Promise<InvoiceRecord> {
@@ -290,6 +329,10 @@ export class PostgresApiServices implements ApiServices {
         );
         const invoice = this.toInvoice(insert.rows[0]!);
         await enqueueInvoiceEvent(client, this.catalog, invoice.id, 'invoice.created');
+        // API keys create invoices at shop volume; only payment links made by people are audited.
+        if (merchant.actor?.type === 'user') {
+          await audit(client, merchant, 'invoice.created', { type: 'invoice', id: invoice.id }, { amount: invoice.amount, currency: invoice.currency, order_id: invoice.order_id });
+        }
         await client.query(
           `INSERT INTO idempotency_keys (merchant_id, key, request_hash, response, expires_at)
            VALUES ($1, $2, $3, $4, now() + interval '24 hours')`, [merchant.id, idempotencyKey, hash, JSON.stringify(invoice)],
@@ -324,8 +367,18 @@ export class PostgresApiServices implements ApiServices {
        FROM invoice_payments WHERE invoice_id = $1 ORDER BY observed_at`, [id],
     );
     const path = await this.pool.query<{ derivation_path: string | null }>('SELECT derivation_path FROM invoices WHERE merchant_id = $1 AND id = $2', [merchant.id, id]);
+    const history = await this.pool.query<{ from_status: InvoiceTimelineEntry['from_status']; to_status: InvoiceTimelineEntry['status']; received_amount_base_units: string; created_at: Date }>(
+      `SELECT from_status, to_status, received_amount_base_units, created_at FROM invoice_status_history
+       WHERE invoice_id = $1 ORDER BY id`, [id],
+    );
     return {
       invoice,
+      timeline: history.rows.map((row) => ({
+        status: row.to_status,
+        from_status: row.from_status,
+        received_amount: asset ? formatBaseUnits(BigInt(row.received_amount_base_units), asset.decimals) : row.received_amount_base_units,
+        at: row.created_at.toISOString(),
+      })),
       derivation_path: path.rows[0]?.derivation_path ?? null,
       payments: payments.rows.map((row) => ({
         transaction_id: row.transaction_id,
@@ -493,6 +546,7 @@ export class PostgresApiServices implements ApiServices {
       );
       if (result.rows[0]) {
         await enqueueInvoiceEvent(client, this.catalog, id, 'invoice.cancelled');
+        await audit(client, merchant, 'invoice.cancelled', { type: 'invoice', id }, { order_id: result.rows[0].order_id });
         return this.toInvoice(result.rows[0]);
       }
       const existing = await client.query('SELECT 1 FROM invoices WHERE merchant_id = $1 AND id = $2', [merchant.id, id]);
@@ -616,6 +670,13 @@ export class PostgresApiServices implements ApiServices {
              updated_at = now()`,
           [merchant.id, wallet.asset, wallet.network, wallet.xpub, wallet.address],
         );
+        if (!previous || changed) {
+          const key = wallet.xpub ?? wallet.address ?? '';
+          await audit(client, merchant, previous ? 'wallet.replaced' : 'wallet.added', { type: 'wallet', id: `${wallet.asset}:${wallet.network}` }, {
+            asset: wallet.asset, network: wallet.network, source: wallet.xpub ? 'extended_public_key' : 'address',
+            public_key_hint: key.length > 16 ? `${key.slice(0, 8)}…${key.slice(-6)}` : key,
+          });
+        }
       }
     });
     return this.getAccount(merchant);
@@ -630,7 +691,9 @@ export class PostgresApiServices implements ApiServices {
       );
       if (open.rowCount) throw new ApiError(409, 'wallet_in_use', 'Close open invoices on this network before removing its wallet.', 'wallets');
       const removed = await client.query('DELETE FROM merchant_wallets WHERE merchant_id = $1 AND asset = $2 AND network = $3', [merchant.id, asset, network]);
-      return removed.rowCount === 1;
+      if (removed.rowCount !== 1) return false;
+      await audit(client, merchant, 'wallet.removed', { type: 'wallet', id: `${asset}:${network}` }, { asset, network });
+      return true;
     });
   }
 
@@ -648,10 +711,15 @@ export class PostgresApiServices implements ApiServices {
       signingSecret = `whsec_${randomBytes(32).toString('base64url')}`;
       encryptedSecret = encryptSecret(signingSecret, encryptionKey);
     }
-    await this.pool.query(
-      'UPDATE merchants SET default_webhook_url = $2, webhook_secret_ciphertext = $3 WHERE id = $1',
-      [merchant.id, url, encryptedSecret],
-    );
+    await this.transaction(async (client) => {
+      const before = await client.query<{ default_webhook_url: string | null }>('SELECT default_webhook_url FROM merchants WHERE id = $1 FOR UPDATE', [merchant.id]);
+      await client.query(
+        'UPDATE merchants SET default_webhook_url = $2, webhook_secret_ciphertext = $3 WHERE id = $1',
+        [merchant.id, url, encryptedSecret],
+      );
+      if (before.rows[0]?.default_webhook_url !== url) await audit(client, merchant, 'webhook.updated', { type: 'webhook', id: 'default' }, { url, previous_url: before.rows[0]?.default_webhook_url ?? null });
+      if (signingSecret) await audit(client, merchant, 'webhook.secret_rotated', { type: 'webhook', id: 'default' });
+    });
     return { webhook_url: url, ...(signingSecret ? { signing_secret: signingSecret } : {}) };
   }
 
@@ -669,7 +737,49 @@ export class PostgresApiServices implements ApiServices {
        VALUES ($1, 'webhook.test', $2, $3, $4)`,
       [merchant.id, config.default_webhook_url, config.webhook_secret_ciphertext, JSON.stringify(payload)],
     );
+    await audit(this.pool, merchant, 'webhook.test_sent', { type: 'webhook', id: 'default' }, { url: config.default_webhook_url });
     return { accepted: true };
+  }
+
+  async listAuditLog(merchant: MerchantContext, query: { limit: number; cursor?: string; action?: string }): Promise<{ data: AuditEntry[]; next_cursor: string | null }> {
+    const params: unknown[] = [merchant.id];
+    let where = 'merchant_id = $1';
+    if (query.cursor) { params.push(query.cursor); where += ` AND id < $${params.length}::bigint`; }
+    if (query.action) {
+      params.push(query.action);
+      // "wallet" matches every wallet.* action, "wallet.added" only that one.
+      where += query.action.includes('.') ? ` AND action = $${params.length}` : ` AND split_part(action, '.', 1) = $${params.length}`;
+    }
+    params.push(query.limit + 1);
+    const result = await this.pool.query<{
+      id: string; action: string; actor_type: AuditEntry['actor']['type']; actor_id: string | null; actor_label: string | null;
+      target_type: string | null; target_id: string | null; details: Record<string, unknown>; ip: string | null; created_at: Date;
+    }>(
+      `SELECT id::text, action, actor_type, actor_id, actor_label, target_type, target_id, details, host(ip) AS ip, created_at
+       FROM audit_log WHERE ${where} ORDER BY id DESC LIMIT $${params.length}`, params,
+    );
+    const rows = result.rows.slice(0, query.limit);
+    return {
+      data: rows.map((row) => ({
+        id: row.id,
+        action: row.action,
+        actor: { type: row.actor_type, id: row.actor_id, label: row.actor_label },
+        target: row.target_type && row.target_id ? { type: row.target_type, id: row.target_id } : null,
+        details: row.details,
+        ip: row.ip,
+        created_at: row.created_at.toISOString(),
+      })),
+      next_cursor: result.rows.length > query.limit ? rows.at(-1)!.id : null,
+    };
+  }
+
+  async verifyAuditLog(merchant: MerchantContext): Promise<{ intact: boolean; entries: number; broken_at: string | null }> {
+    const result = await this.pool.query<{ broken_at: string | null; entries: number }>(
+      `SELECT orbitt_verify_audit_log($1)::text AS broken_at, (SELECT count(*)::int FROM audit_log WHERE merchant_id = $1) AS entries`,
+      [merchant.id],
+    );
+    const row = result.rows[0]!;
+    return { intact: row.broken_at === null, entries: row.entries, broken_at: row.broken_at };
   }
 
   private encodeCursor(row: InvoiceRow & { cursor_created_at: string }): string {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowDownLeft, BookOpen, CreditCard, ExternalLink, KeyRound, LayoutGrid, LogOut, Menu, Settings2, WalletCards, Webhook, X } from 'lucide-react';
+import { ArrowDownLeft, BookOpen, CreditCard, ExternalLink, History, KeyRound, LayoutGrid, LogOut, Menu, Settings2, WalletCards, Webhook, X } from 'lucide-react';
 import { BrandLockup, OrbitMark } from '@orbitt/ui';
 import { api, errorMessage, type Account, type DashboardSession } from './api.js';
 import { CatalogProvider } from './catalog.js';
@@ -9,12 +9,14 @@ import { InvoiceDrawer, InvoicesPage } from './pages/invoices.js';
 import { AssetsPage } from './pages/assets.js';
 import { WebhooksPage } from './pages/webhooks.js';
 import { ApiKeysPage, LoginScreen, SettingsPage } from './pages/settings.js';
+import { ActivityPage } from './pages/activity.js';
 
-export type Page = 'Overview' | 'Invoices' | 'Payments' | 'Assets' | 'Webhooks' | 'API keys' | 'Settings';
+export type Page = 'Overview' | 'Invoices' | 'Payments' | 'Assets' | 'Webhooks' | 'API keys' | 'Activity' | 'Settings';
 
 const NAVIGATION: Array<{ section: string; items: Array<{ label: Page; icon: typeof LayoutGrid }> }> = [
   { section: 'Payments', items: [{ label: 'Overview', icon: LayoutGrid }, { label: 'Invoices', icon: CreditCard }, { label: 'Payments', icon: ArrowDownLeft }] },
-  { section: 'Setup', items: [{ label: 'Assets', icon: WalletCards }, { label: 'Webhooks', icon: Webhook }, { label: 'API keys', icon: KeyRound }, { label: 'Settings', icon: Settings2 }] },
+  { section: 'Setup', items: [{ label: 'Assets', icon: WalletCards }, { label: 'Webhooks', icon: Webhook }, { label: 'API keys', icon: KeyRound }] },
+  { section: 'Workspace', items: [{ label: 'Activity', icon: History }, { label: 'Settings', icon: Settings2 }] },
 ];
 const PAGES = NAVIGATION.flatMap((group) => group.items.map((item) => item.label));
 const slug = (page: Page) => page.toLowerCase().replace(/\s+/g, '-');
@@ -97,6 +99,7 @@ function Shell({ session, logout }: { session: DashboardSession; logout: () => P
           {route.page === 'Assets' && <AssetsPage account={account} reloadAccount={reloadAccount} />}
           {route.page === 'Webhooks' && <WebhooksPage account={account} onOpenInvoice={openInvoice} go={go} />}
           {route.page === 'API keys' && <ApiKeysPage />}
+          {route.page === 'Activity' && <ActivityPage onOpenInvoice={openInvoice} />}
           {route.page === 'Settings' && <SettingsPage account={account} reload={reloadAccount} session={session} logout={logout} />}
         </div>
       </main>

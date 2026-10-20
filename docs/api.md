@@ -24,7 +24,7 @@ Send `Authorization: Bearer <secret_key>` on merchant endpoints. Keys carry 256 
 | `POST` | `/v1/public/invoices/{id}/payment` | Customer picks `asset` and `network` (no API key) |
 | `POST` | `/v1/public/invoices/{id}/cancel` | Customer cancels an unpaid invoice (no API key) |
 
-The dashboard uses the same services under `/v1/dashboard/*` with session cookies and CSRF protection instead of API keys.
+The dashboard uses the same services under `/v1/dashboard/*` with session cookies and CSRF protection instead of API keys. Dashboard-only routes include `GET /v1/dashboard/invoices/{id}` (invoice with `timeline`, on-chain payments and webhook deliveries), `GET /v1/dashboard/audit-log` (`limit`, `cursor`, and `action` as an area such as `wallet` or an exact action such as `wallet.added`) and `GET /v1/dashboard/audit-log/verify` (`{ intact, entries, broken_at }`).
 
 ## Creating invoices
 

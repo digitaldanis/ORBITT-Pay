@@ -17,7 +17,7 @@ function mockServices(): ApiServices {
     authenticateKey: async (hash) => hash === hashApiKey(secret) ? merchant : null,
     createInvoice: async () => invoice,
     getInvoice: async () => invoice,
-    getInvoiceDetail: async () => ({ invoice, derivation_path: null, payments: [], webhooks: [] }),
+    getInvoiceDetail: async () => ({ invoice, timeline: [], derivation_path: null, payments: [], webhooks: [] }),
     getPublicInvoice: async () => null,
     selectPublicPayment: async () => null,
     cancelPublicInvoice: async () => null,
@@ -39,6 +39,8 @@ function mockServices(): ApiServices {
     listDashboardApiKeys: async () => [],
     createDashboardApiKey: async (_merchant, name) => ({ id: '0b9678da-f39f-4b3f-a74e-624eaa36d8bd', name, key_prefix: 'ob_live_test', secret }),
     revokeDashboardApiKey: async () => true,
+    listAuditLog: async () => ({ data: [], next_cursor: null }),
+    verifyAuditLog: async () => ({ intact: true, entries: 0, broken_at: null }),
   };
 }
 
