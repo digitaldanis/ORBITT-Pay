@@ -1,5 +1,8 @@
-import { isIP } from 'node:net';
+import { isIP, type LookupFunction } from 'node:net';
 import { lookup } from 'node:dns/promises';
+import { lookup as lookupCallback } from 'node:dns';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import type { Pool } from 'pg';
 import { decryptSecret, signWebhook } from '@orbitt/webhooks';
 
@@ -60,6 +63,43 @@ async function validateTarget(target: string): Promise<void> {
   if (addresses.some(({ address }) => isPrivateAddress(address))) throw new Error('private_webhook_target');
 }
 
+/**
+ * Resolves the target host for the actual connection and refuses private addresses there too, so a
+ * DNS answer that changes between validation and connect (DNS rebinding) cannot reach internal hosts.
+ */
+export const guardedLookup: LookupFunction = (hostname, options, callback) => {
+  lookupCallback(hostname, { ...options, all: true, verbatim: true }, (error, addresses) => {
+    if (error) return callback(error, '', 0);
+    const list = addresses as Array<{ address: string; family: number }>;
+    if (!list.length || (!allowPrivateTargets() && list.some(({ address }) => isPrivateAddress(address)))) {
+      return callback(Object.assign(new Error('private_webhook_target'), { code: 'EPRIVATETARGET' }), '', 0);
+    }
+    if (options.all) return (callback as unknown as (err: null, addresses: Array<{ address: string; family: number }>) => void)(null, list);
+    return callback(null, list[0]!.address, list[0]!.family);
+  });
+};
+
+/** POSTs without following redirects, through {@link guardedLookup}. Resolves with the HTTP status. */
+export function postWebhook(target: string, headers: Record<string, string>, body: string, timeoutMs = 10_000): Promise<number> {
+  const url = new URL(target);
+  const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
+  return new Promise((resolvePost, rejectPost) => {
+    const request = send(url, {
+      method: 'POST',
+      headers: { ...headers, 'content-length': Buffer.byteLength(body).toString() },
+      lookup: guardedLookup,
+      timeout: timeoutMs,
+    }, (response) => {
+      response.resume();
+      response.once('end', () => resolvePost(response.statusCode ?? 0));
+      response.once('error', rejectPost);
+    });
+    request.once('timeout', () => request.destroy(Object.assign(new Error('request_timeout'), { name: 'TimeoutError' })));
+    request.once('error', rejectPost);
+    request.end(body);
+  });
+}
+
 export class WebhookWorker {
   constructor(private readonly pool: Pool, private readonly encryptionKey: string) {}
 
@@ -108,22 +148,17 @@ export class WebhookWorker {
       const secret = decryptSecret(delivery.secret_ciphertext, this.encryptionKey);
       const body = JSON.stringify(delivery.payload);
       const signed = signWebhook(secret, body);
-      const response = await fetch(delivery.target_url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'ORBITT-Signature': signed.header,
-          'ORBITT-Event': delivery.event_type,
-          'ORBITT-Delivery': delivery.id,
-        },
-        body,
-        signal: AbortSignal.timeout(10_000),
-        redirect: 'error',
-      });
-      await response.body?.cancel();
-      return response.ok
-        ? { httpStatus: response.status, responseExcerpt: null, error: null, permanent: false }
-        : { httpStatus: response.status, responseExcerpt: null, error: `http_${response.status}`, permanent: false };
+      const status = await postWebhook(delivery.target_url, {
+        'content-type': 'application/json',
+        'user-agent': 'ORBITT-PAY-Webhooks/1.0',
+        'ORBITT-Signature': signed.header,
+        'ORBITT-Event': delivery.event_type,
+        'ORBITT-Delivery': delivery.id,
+      }, body);
+      // Redirects are not followed, so a 3xx counts as a failed attempt like any other non-2xx status.
+      return status >= 200 && status < 300
+        ? { httpStatus: status, responseExcerpt: null, error: null, permanent: false }
+        : { httpStatus: status, responseExcerpt: null, error: `http_${status}`, permanent: false };
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : '';
       const message = ['invalid_webhook_url', 'webhook_https_required', 'private_webhook_target'].includes(rawMessage)

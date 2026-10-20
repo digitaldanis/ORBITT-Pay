@@ -12,7 +12,7 @@ openssl rand -base64 32
 
 Send `PUT /v1/account/webhook` with `{"url":"https://shop.example/webhooks/orbitt"}`. The first configuration returns a `signing_secret` once; store it in the merchant's secret manager. The API encrypts the secret with AES-256-GCM before storing it. Rotating with `{"url":"https://shop.example/webhooks/orbitt","rotate_secret":true}` returns a new secret once. Pending deliveries retain an encrypted snapshot of the secret that was active when the event was queued.
 
-Production webhook targets must use HTTPS and cannot contain URL credentials. The worker rejects localhost and private-network DNS/IP targets, does not follow redirects, and limits each request to ten seconds. An invoice can override the account webhook URL with `webhook_url` while using the account signing secret.
+Production webhook targets must use HTTPS and cannot contain URL credentials. The worker rejects localhost and private-network DNS/IP targets, checks the resolved address again on the connection itself (so a DNS answer that changes after validation cannot reach an internal host), does not follow redirects (a 3xx counts as a failed attempt), and limits each request to ten seconds. An invoice can override the account webhook URL with `webhook_url` while using the account signing secret.
 
 ## Signature verification
 
