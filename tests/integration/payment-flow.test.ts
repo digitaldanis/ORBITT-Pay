@@ -209,6 +209,11 @@ describe.skipIf(!databaseUrl)('payment flow (PostgreSQL)', () => {
     expect(older.data.map((entry) => entry.action)).toContain('api_key.created');
     expect(older.data.map((entry) => entry.action)).toContain('wallet.added');
     expect((await services.listAuditLog(merchant, { limit: 100, action: 'wallet' })).data.every((entry) => entry.action.startsWith('wallet.'))).toBe(true);
+    // Ids are returned as text; the order must still be numeric once there are ten or more entries.
+    for (let index = 0; index < 8; index += 1) await services.createDashboardApiKey(user, `Bulk ${index}`);
+    const all = (await services.listAuditLog(merchant, { limit: 100 })).data.map((entry) => BigInt(entry.id));
+    expect(all.length).toBeGreaterThanOrEqual(10);
+    expect(all).toEqual([...all].sort((left, right) => (left > right ? -1 : 1)));
 
     expect(await services.verifyAuditLog(merchant)).toMatchObject({ intact: true, broken_at: null });
     await expect(pool.query("UPDATE audit_log SET action = 'x' WHERE merchant_id = $1", [merchant.id])).rejects.toThrow('append-only');

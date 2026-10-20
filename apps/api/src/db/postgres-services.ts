@@ -756,7 +756,7 @@ export class PostgresApiServices implements ApiServices {
       target_type: string | null; target_id: string | null; details: Record<string, unknown>; ip: string | null; created_at: Date;
     }>(
       `SELECT id::text, action, actor_type, actor_id, actor_label, target_type, target_id, details, host(ip) AS ip, created_at
-       FROM audit_log WHERE ${where} ORDER BY id DESC LIMIT $${params.length}`, params,
+       FROM audit_log WHERE ${where} ORDER BY audit_log.id DESC LIMIT $${params.length}`, params,
     );
     const rows = result.rows.slice(0, query.limit);
     return {
