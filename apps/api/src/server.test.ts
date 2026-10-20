@@ -74,6 +74,9 @@ describe('merchant API', () => {
     const listed = await app.inject({ method: 'GET', url: '/v1/invoices?limit=50&status=paid&search=ORD', headers });
     expect(listed.statusCode).toBe(200);
     expect(received).toEqual({ limit: 50, status: 'paid', search: 'ORD' });
+    expect((await app.inject({ method: 'GET', url: '/v1/invoices?status=awaiting_payment,underpaid', headers })).statusCode).toBe(200);
+    expect(received).toEqual({ limit: 25, status: ['awaiting_payment', 'underpaid'] });
+    expect((await app.inject({ method: 'GET', url: '/v1/invoices?status=paid,unknown', headers })).statusCode).toBe(400);
     expect((await app.inject({ method: 'GET', url: '/v1/invoices?limit=101', headers })).statusCode).toBe(400);
     expect((await app.inject({ method: 'GET', url: '/v1/invoices?limit=0', headers })).statusCode).toBe(400);
     await app.close();

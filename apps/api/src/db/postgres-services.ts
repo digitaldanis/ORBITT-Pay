@@ -323,7 +323,7 @@ export class PostgresApiServices implements ApiServices {
       `SELECT transaction_id, asset, amount_base_units, confirmations::text, block_number::text, observed_at
        FROM invoice_payments WHERE invoice_id = $1 ORDER BY observed_at`, [id],
     );
-    const path = await this.pool.query<{ derivation_path: string | null }>('SELECT derivation_path FROM invoices WHERE id = $1', [id]);
+    const path = await this.pool.query<{ derivation_path: string | null }>('SELECT derivation_path FROM invoices WHERE merchant_id = $1 AND id = $2', [merchant.id, id]);
     return {
       invoice,
       derivation_path: path.rows[0]?.derivation_path ?? null,
@@ -463,15 +463,19 @@ export class PostgresApiServices implements ApiServices {
     const cursor = query.cursor ? this.decodeCursor(query.cursor) : null;
     const params: unknown[] = [merchant.id];
     let where = 'merchant_id = $1';
-    if (query.status) { params.push(query.status); where += ` AND status = $${params.length}`; }
+    const statuses = query.status === undefined ? [] : Array.isArray(query.status) ? query.status : [query.status];
+    if (statuses.length) { params.push(statuses); where += ` AND status = ANY($${params.length}::invoice_status[])`; }
     if (query.search) {
       params.push(`%${query.search.replace(/[\\%_]/g, (match) => `\\${match}`)}%`);
       where += ` AND (order_id ILIKE $${params.length} OR id::text ILIKE $${params.length} OR address ILIKE $${params.length})`;
     }
-    if (cursor) { params.push(cursor.createdAt, cursor.id); where += ` AND (created_at, id) < ($${params.length - 1}, $${params.length})`; }
+    if (cursor) { params.push(cursor.createdAt, cursor.id); where += ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`; }
     params.push(query.limit + 1);
-    const result = await this.pool.query<InvoiceRow>(
-      `SELECT ${INVOICE_COLUMNS} FROM invoices WHERE ${where}
+    // The cursor carries created_at with microseconds: a JavaScript Date keeps only milliseconds,
+    // which would skip invoices created within the same millisecond as the last row of a page.
+    const result = await this.pool.query<InvoiceRow & { cursor_created_at: string }>(
+      `SELECT ${INVOICE_COLUMNS}, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_created_at
+       FROM invoices WHERE ${where}
        ORDER BY created_at DESC, id DESC LIMIT $${params.length}`, params,
     );
     const hasMore = result.rows.length > query.limit;
@@ -668,17 +672,19 @@ export class PostgresApiServices implements ApiServices {
     return { accepted: true };
   }
 
-  private encodeCursor(row: InvoiceRow): string {
-    return Buffer.from(`${row.created_at.toISOString()}|${row.id}`).toString('base64url');
+  private encodeCursor(row: InvoiceRow & { cursor_created_at: string }): string {
+    return Buffer.from(`${row.cursor_created_at}|${row.id}`).toString('base64url');
   }
 
-  private decodeCursor(value: string): { createdAt: Date; id: string } {
+  private decodeCursor(value: string): { createdAt: string; id: string } {
     try {
       const decoded = Buffer.from(value, 'base64url').toString('utf8');
       const separator = decoded.lastIndexOf('|');
-      const createdAt = new Date(decoded.slice(0, separator));
+      const createdAt = decoded.slice(0, separator);
       const id = decoded.slice(separator + 1);
-      if (separator < 0 || Number.isNaN(createdAt.getTime()) || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error();
+      // Accepts the microsecond form and the millisecond form issued by earlier versions.
+      if (separator < 0 || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/.test(createdAt) || Number.isNaN(Date.parse(createdAt))
+        || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error();
       return { createdAt, id };
     } catch {
       throw new ApiError(400, 'invalid_cursor', 'The pagination cursor is invalid.', 'cursor');

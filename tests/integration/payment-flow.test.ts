@@ -190,4 +190,28 @@ describe.skipIf(!databaseUrl)('payment flow (PostgreSQL)', () => {
     const search = await services.listInvoices(merchant, { limit: 10, search: '1001' });
     expect(search.data).toHaveLength(1);
   });
+
+  it('pages through invoices created within the same millisecond without skipping any', async () => {
+    const other = (await pool.query<{ id: string; name: string }>("INSERT INTO merchants (name) VALUES ('Paging Store') RETURNING id, name")).rows[0]!;
+    await pool.query(
+      `INSERT INTO invoices (merchant_id, request_amount, request_currency, expires_at, created_at)
+       SELECT $1, '1', 'EUR', now() + interval '1 hour', '2026-01-01T00:00:00.123Z'::timestamptz + (g * interval '1 microsecond')
+       FROM generate_series(1, 7) g`, [other.id],
+    );
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await services.listInvoices(other, { limit: 2, ...(cursor ? { cursor } : {}) });
+      seen.push(...page.data.map((invoice) => invoice.id));
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+    expect(seen).toHaveLength(7);
+    expect(new Set(seen).size).toBe(7);
+  });
+
+  it('filters invoices by several statuses at once', async () => {
+    const open = await services.listInvoices(merchant, { limit: 100, status: ['awaiting_payment', 'created'] });
+    expect(open.data.length).toBeGreaterThan(0);
+    expect(open.data.every((invoice) => ['awaiting_payment', 'created'].includes(invoice.status))).toBe(true);
+  });
 });

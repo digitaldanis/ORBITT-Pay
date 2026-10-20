@@ -1,6 +1,6 @@
 export type InvoiceStatus = 'created' | 'awaiting_payment' | 'detected' | 'confirming' | 'paid' | 'underpaid' | 'overpaid' | 'expired' | 'late_payment' | 'cancelled';
 export const INVOICE_STATUSES: InvoiceStatus[] = ['created', 'awaiting_payment', 'detected', 'confirming', 'paid', 'underpaid', 'overpaid', 'expired', 'late_payment', 'cancelled'];
-export const OPEN_STATUSES: InvoiceStatus[] = ['created', 'awaiting_payment', 'detected', 'confirming', 'underpaid'];
+export const OPEN_STATUSES: InvoiceStatus[] = ['created', 'awaiting_payment', 'detected', 'confirming', 'underpaid', 'overpaid'];
 
 export interface Invoice {
   id: string;

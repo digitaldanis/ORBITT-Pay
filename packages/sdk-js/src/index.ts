@@ -143,9 +143,9 @@ export class OrbittClient {
     return this.request<Invoice>(`/v1/invoices/${encodeURIComponent(id)}`);
   }
 
-  listInvoices(options: { status?: InvoiceStatus; search?: string; limit?: number; cursor?: string } = {}): Promise<InvoiceList> {
+  listInvoices(options: { status?: InvoiceStatus | readonly InvoiceStatus[]; search?: string; limit?: number; cursor?: string } = {}): Promise<InvoiceList> {
     const query = new URLSearchParams();
-    if (options.status) query.set('status', options.status);
+    if (options.status?.length) query.set('status', typeof options.status === 'string' ? options.status : options.status.join(','));
     if (options.search) query.set('search', options.search);
     if (options.limit !== undefined) query.set('limit', String(options.limit));
     if (options.cursor) query.set('cursor', options.cursor);

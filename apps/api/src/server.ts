@@ -117,10 +117,11 @@ export interface CreateInvoiceInput {
   metadata?: Record<string, unknown>;
 }
 
-type ListQuerystring = { status?: InvoiceListQuery['status']; search?: string; limit?: string; cursor?: string };
+type ListQuerystring = { status?: string; search?: string; limit?: string; cursor?: string };
 
 export interface InvoiceListQuery {
-  status?: typeof invoiceStatuses[number];
+  /** One status, or several to match any of them. */
+  status?: typeof invoiceStatuses[number] | Array<typeof invoiceStatuses[number]>;
   search?: string;
   limit: number;
   cursor?: string;
@@ -200,9 +201,11 @@ const webhookBody = {
   properties: { url: { type: ['string', 'null'], format: 'uri', pattern: '^https?://', maxLength: 2048 }, rotate_secret: { type: 'boolean', default: false } },
 } as const;
 
+const statusPattern = `^(${invoiceStatuses.join('|')})(,(${invoiceStatuses.join('|')}))*$`;
+
 const listQuery = {
   type: 'object', additionalProperties: false,
-  properties: { status: { type: 'string', enum: invoiceStatuses }, search: { type: 'string', minLength: 1, maxLength: 120 }, limit: { type: 'string', pattern: '^(100|[1-9][0-9]?)$' }, cursor: { type: 'string', maxLength: 255 } },
+  properties: { status: { type: 'string', pattern: statusPattern, maxLength: 200, description: 'One status or a comma-separated list, e.g. `awaiting_payment,underpaid`.' }, search: { type: 'string', minLength: 1, maxLength: 120 }, limit: { type: 'string', pattern: '^(100|[1-9][0-9]?)$' }, cursor: { type: 'string', maxLength: 255 } },
 } as const;
 
 const idParams = {
@@ -234,6 +237,11 @@ type ErrorReply = {
     send(payload: { error: { code: string; message: string; param?: string } }): unknown;
   };
 };
+
+function parseStatuses(value: string): NonNullable<InvoiceListQuery['status']> {
+  const statuses = [...new Set(value.split(','))] as Array<typeof invoiceStatuses[number]>;
+  return statuses.length === 1 ? statuses[0]! : statuses;
+}
 
 function fail(reply: ErrorReply, status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500, code: string, message: string, param?: string) {
   return reply.code(status).send({ error: { code, message, ...(param ? { param } : {}) } });
@@ -383,7 +391,7 @@ export async function buildServer(services: ApiServices, options: { logger?: boo
   // Query strings arrive as text and AJV coercion is off, so the limit is validated as digits and parsed here.
   const listQueryFrom = (query: ListQuerystring): InvoiceListQuery => ({
     limit: query.limit ? Number(query.limit) : 25,
-    ...(query.status ? { status: query.status } : {}),
+    ...(query.status ? { status: parseStatuses(query.status) } : {}),
     ...(query.search ? { search: query.search } : {}),
     ...(query.cursor ? { cursor: query.cursor } : {}),
   });

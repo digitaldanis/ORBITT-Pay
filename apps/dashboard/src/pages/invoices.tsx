@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { ArrowUpRight, ChevronRight, CreditCard, ExternalLink, Link2, Plus, RefreshCw, RotateCw, Search } from 'lucide-react';
 import { CoinIcon, explorerTransactionUrl } from '@orbitt/ui';
-import { api, errorMessage, type Invoice, type InvoiceDetail, type InvoiceStatus } from '../api.js';
+import { api, errorMessage, OPEN_STATUSES, type Invoice, type InvoiceDetail } from '../api.js';
 import { dateLabel, formatFiat, middleTruncate, relativeTime } from '../format.js';
 import { Banner, CopyButton, DetailRow, Drawer, EmptyState, Loading, Modal, PageHeader, StatusBadge, useResource } from '../ui.js';
 import { useCatalog } from '../catalog.js';
@@ -34,13 +34,14 @@ export function InvoiceTable({ invoices, onOpen, compact = false }: { invoices: 
   );
 }
 
-const FILTERS: Array<{ label: string; status: InvoiceStatus | '' }> = [
-  { label: 'All', status: '' }, { label: 'Open', status: 'awaiting_payment' }, { label: 'Paid', status: 'paid' },
+const FILTERS: Array<{ label: string; status: string }> = [
+  { label: 'All', status: '' }, { label: 'Open', status: OPEN_STATUSES.join(',') }, { label: 'Paid', status: 'paid' },
   { label: 'Underpaid', status: 'underpaid' }, { label: 'Late', status: 'late_payment' }, { label: 'Expired', status: 'expired' },
+  { label: 'Cancelled', status: 'cancelled' },
 ];
 
 export function InvoicesPage({ paidOnly = false, onOpen, refreshKey }: { paidOnly?: boolean; onOpen: (id: string) => void; refreshKey: number }) {
-  const [status, setStatus] = useState<InvoiceStatus | ''>(paidOnly ? 'paid' : '');
+  const [status, setStatus] = useState(paidOnly ? 'paid' : '');
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [items, setItems] = useState<Invoice[]>([]);

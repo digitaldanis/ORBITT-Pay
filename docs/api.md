@@ -11,7 +11,7 @@ Send `Authorization: Bearer <secret_key>` on merchant endpoints. Keys carry 256 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/v1/invoices` | Create an invoice; requires `Idempotency-Key` |
-| `GET` | `/v1/invoices` | List invoices; `status`, `search`, `limit` (1–100) and `cursor` filters |
+| `GET` | `/v1/invoices` | List invoices; `status` (one status or a comma-separated list), `search`, `limit` (1–100) and `cursor` filters |
 | `GET` | `/v1/invoices/{id}` | Read one invoice |
 | `GET` | `/v1/invoices/{id}/payments` | On-chain transfers matched to the invoice |
 | `POST` | `/v1/invoices/{id}/cancel` | Cancel an invoice that has received nothing |
