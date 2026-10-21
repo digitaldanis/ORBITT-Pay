@@ -25,7 +25,7 @@ try {
     const merchantId = merchant.rows[0]!.id;
     const key = createApiKey();
     await client.query('INSERT INTO api_keys (merchant_id, name, key_hash, key_prefix) VALUES ($1, $2, $3, $4)', [merchantId, 'Demo key', key.hash, key.prefix]);
-    await client.query('INSERT INTO merchant_users (merchant_id, email, password_hash) VALUES ($1, $2, $3)', [
+    await client.query("INSERT INTO merchant_users (merchant_id, email, password_hash, role, name) VALUES ($1, $2, $3, 'owner', 'Demo Owner')", [
       merchantId, email, await hash(password, { algorithm: Algorithm.Argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1, outputLen: 32 }),
     ]);
     const wallets: Array<[string, string, string | null, string | null]> = [

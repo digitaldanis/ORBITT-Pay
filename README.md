@@ -14,6 +14,7 @@
 - **Merchant dashboard:** volume chart, invoice search and detail drawer with on-chain payments and webhook history, payment links, a wallet creation wizard (recovery phrase stays in the browser), wallet setup per network with live scanner health, webhook retries and API keys.
 - **Signed webhooks** (HMAC-SHA256) through a PostgreSQL outbox with retries and an encrypted signing secret.
 - **Ledger and audit trail:** every invoice status change is recorded by the database itself, and every change to keys, wallets, webhooks and sign-ins goes to an append-only, hash-chained audit log with an Activity page and `npm run audit:verify`.
+- **Team management:** owner, admin, developer and viewer roles enforced by the API, invitation links, password changes and per-device session control.
 - **JavaScript SDK** with a typed client and a webhook verifier.
 
 ## Architecture

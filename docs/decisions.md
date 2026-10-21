@@ -53,3 +53,12 @@ The repository starts as an npm workspace monorepo. Applications and packages ar
 - API-created invoices are not audited individually; their lifecycle is in the status history and the audit log stays readable at shop volume.
 - The worker runs hourly maintenance: expired idempotency keys are deleted, sessions a week after they expired or were revoked.
 - Connection pools set `statement_timeout` and `idle_in_transaction_session_timeout`, so a stuck query cannot hold invoice row locks. Migrations lift the statement timeout for backfills.
+
+## Team and roles
+
+- Four fixed roles (owner, admin, developer, viewer) mapped to five permissions (`payments`, `developers`, `wallets`, `team`, `workspace`) in `apps/api/src/auth/roles.ts`. Reads are open to every member; only writes are gated. The session endpoint returns the permissions, so the dashboard hides actions without a second copy of the rules.
+- The role is read from the database on every request rather than stored in the session, so changes apply at once.
+- Invitations are links, not emails: the stack has no mail service, and a link the inviter forwards keeps it that way. Tokens are 256-bit, stored as SHA-256, valid for seven days, single use.
+- New `merchant_users` rows default to `viewer`; the CLIs and invitations set the role explicitly, so a forgotten value never grants more than read access.
+- Removing the last active owner is refused inside a transaction that locks the workspace's members.
+- Two-factor authentication is still open and is the next item for dashboard security.

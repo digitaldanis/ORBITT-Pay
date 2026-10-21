@@ -410,3 +410,9 @@ input.is-valid { border-color: rgba(52, 211, 153, .55); }
 .chain-status { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding: 10px 14px; border: 1px solid rgba(52, 211, 153, .25); border-radius: var(--ob-radius); background: rgba(52, 211, 153, .07); color: #6ee7b7; font-size: 13px; }
 .chain-status span { flex: 1; }
 .chain-status.broken { border-color: rgba(248, 113, 113, .3); background: rgba(248, 113, 113, .08); color: #fca5a5; }
+
+/* Role-gated forms render as read-only without changing layout */
+.plain-fieldset { display: contents; margin: 0; padding: 0; border: 0; }
+.plain-fieldset:disabled input, .plain-fieldset:disabled select, .plain-fieldset:disabled textarea { opacity: .6; cursor: not-allowed; }
+.session-badge { margin-left: 8px; vertical-align: 1px; font-size: 11px; padding: 2px 8px; }
+.inline-form-controls select { min-width: 130px; }
