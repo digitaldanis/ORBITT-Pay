@@ -6,6 +6,7 @@ import { Pool } from 'pg';
 import { parseAssetCatalog } from '@orbitt/core';
 import { WebhookWorker } from './webhook-worker.js';
 import { ChainScanner, type ScannerLogger } from './chain-scanner.js';
+import { Maintenance } from './maintenance.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const encryptionKey = process.env.APP_ENCRYPTION_KEY;
@@ -21,9 +22,13 @@ const log: ScannerLogger = {
   warn: (message, fields) => process.stderr.write(`${JSON.stringify({ level: 'warn', time: new Date().toISOString(), message, ...fields })}\n`),
 };
 
-const pool = new Pool({ connectionString: databaseUrl, max: 5, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 5_000 });
+const pool = new Pool({
+  connectionString: databaseUrl, max: 5, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 5_000,
+  statement_timeout: 30_000, idle_in_transaction_session_timeout: 60_000, application_name: 'orbitt-worker',
+});
 const webhooks = new WebhookWorker(pool, encryptionKey);
 const scanner = new ChainScanner(pool, catalog, process.env, log);
+const maintenance = new Maintenance(pool, log);
 const stopping = new AbortController();
 process.once('SIGINT', () => stopping.abort());
 process.once('SIGTERM', () => stopping.abort());
@@ -49,5 +54,9 @@ async function loop(name: string, iteration: () => Promise<boolean>): Promise<vo
 await pool.query('SELECT 1');
 log.info('ORBITT PAY worker started', { assets: catalog.filter((asset) => asset.enabled).length });
 // Separate loops so slow chain providers never delay webhook delivery.
-await Promise.all([loop('chain scanner', () => scanner.runOnce()), loop('webhook delivery', () => webhooks.runOnce())]);
+await Promise.all([
+  loop('chain scanner', () => scanner.runOnce()),
+  loop('webhook delivery', () => webhooks.runOnce()),
+  loop('maintenance', () => maintenance.runOnce()),
+]);
 await pool.end();

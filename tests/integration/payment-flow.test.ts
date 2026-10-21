@@ -16,6 +16,7 @@ import { PostgresApiServices } from '../../apps/api/src/db/postgres-services.js'
 import { PostgresInvoicePreparer } from '../../apps/api/src/invoices/preparer.js';
 import { ChainScanner, type OpenInvoice } from '../../apps/worker/src/chain-scanner.js';
 import { WebhookWorker } from '../../apps/worker/src/webhook-worker.js';
+import { Maintenance } from '../../apps/worker/src/maintenance.js';
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const catalog = parseAssetCatalog(JSON.parse(readFileSync(new URL('../../config/assets.json', import.meta.url), 'utf8')));
@@ -116,6 +117,11 @@ describe.skipIf(!databaseUrl)('payment flow (PostgreSQL)', () => {
     expect(paid!.payments).toHaveLength(2);
     expect((await services.getPublicInvoice(created.id))!.confirmation_eta_seconds).toBeNull();
     expect(await events(created.id)).toEqual(['invoice.created', 'invoice.detected', 'invoice.underpaid', 'invoice.confirming', 'invoice.paid']);
+    expect(paid!.timeline.map((entry) => entry.status)).toEqual(['created', 'awaiting_payment', 'underpaid', 'confirming', 'paid']);
+    expect(paid!.timeline.at(2)).toMatchObject({ from_status: 'awaiting_payment', received_amount: '0.0002' });
+    const stamps = (await pool.query<{ paid_at: Date | null; closed_at: Date | null }>('SELECT paid_at, closed_at FROM invoices WHERE id = $1', [created.id])).rows[0]!;
+    expect(stamps.paid_at).toBeInstanceOf(Date);
+    expect(stamps.closed_at).toBeInstanceOf(Date);
   });
 
   it('delivers signed webhooks that verify with the merchant secret', async () => {
@@ -189,5 +195,124 @@ describe.skipIf(!databaseUrl)('payment flow (PostgreSQL)', () => {
     expect(await services.redeliverWebhook(merchant, deliveries[0]!.id as string)).toBe(true);
     const search = await services.listInvoices(merchant, { limit: 10, search: '1001' });
     expect(search.data).toHaveLength(1);
+  });
+
+  it('keeps a tamper-evident audit log of workspace changes', async () => {
+    const user = { ...merchant, actor: { type: 'user' as const, id: null, label: 'owner@orbit.store', ip: '203.0.113.7' } };
+    const key = await services.createDashboardApiKey(user, 'Audit test');
+    await services.revokeDashboardApiKey(user, key.id);
+    await services.setWebhook(user, null, false);
+    const log = await services.listAuditLog(merchant, { limit: 2 });
+    expect(log.data.map((entry) => entry.action)).toEqual(['webhook.updated', 'api_key.revoked']);
+    expect(log.data[1]).toMatchObject({ actor: { type: 'user', label: 'owner@orbit.store' }, ip: '203.0.113.7', target: { type: 'api_key', id: key.id } });
+    const older = await services.listAuditLog(merchant, { limit: 100, cursor: log.next_cursor! });
+    expect(older.data.map((entry) => entry.action)).toContain('api_key.created');
+    expect(older.data.map((entry) => entry.action)).toContain('wallet.added');
+    expect((await services.listAuditLog(merchant, { limit: 100, action: 'wallet' })).data.every((entry) => entry.action.startsWith('wallet.'))).toBe(true);
+    // Ids are returned as text; the order must still be numeric once there are ten or more entries.
+    for (let index = 0; index < 8; index += 1) await services.createDashboardApiKey(user, `Bulk ${index}`);
+    const all = (await services.listAuditLog(merchant, { limit: 100 })).data.map((entry) => BigInt(entry.id));
+    expect(all.length).toBeGreaterThanOrEqual(10);
+    expect(all).toEqual([...all].sort((left, right) => (left > right ? -1 : 1)));
+
+    expect(await services.verifyAuditLog(merchant)).toMatchObject({ intact: true, broken_at: null });
+    await expect(pool.query("UPDATE audit_log SET action = 'x' WHERE merchant_id = $1", [merchant.id])).rejects.toThrow('append-only');
+    await expect(pool.query('DELETE FROM audit_log WHERE merchant_id = $1', [merchant.id])).rejects.toThrow('append-only');
+    // Someone with superuser rights who bypasses the trigger still breaks the chain.
+    const target = log.data[1]!.id;
+    await pool.query('ALTER TABLE audit_log DISABLE TRIGGER audit_log_immutable');
+    await pool.query(`UPDATE audit_log SET details = '{"name":"forged"}' WHERE id = $1`, [target]);
+    await pool.query('ALTER TABLE audit_log ENABLE TRIGGER audit_log_immutable');
+    expect(await services.verifyAuditLog(merchant)).toMatchObject({ intact: false, broken_at: target });
+  });
+
+  it('runs a team: invitations, roles, the last owner, passwords and sessions', async () => {
+    const { hash, Algorithm } = await import('@node-rs/argon2');
+    const passwordHash = await hash('owner password 123', { algorithm: Algorithm.Argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1, outputLen: 32 });
+    await pool.query("INSERT INTO merchant_users (merchant_id, email, password_hash, role) VALUES ($1, 'owner@orbit.store', $2, 'owner')", [merchant.id, passwordHash]);
+    const client = { ip: '198.51.100.4', userAgent: 'Vitest' };
+    const login = (await services.loginDashboard('Owner@Orbit.Store', 'owner password 123', client))!;
+    expect(login.user).toMatchObject({ email: 'owner@orbit.store', role: 'owner' });
+    const ownerSession = (await services.authenticateDashboardSession(login.sessionToken))!;
+    expect(ownerSession.user.role).toBe('owner');
+
+    const invitation = await services.createInvitation(ownerSession, 'Admin@Orbit.Store', 'admin');
+    expect(invitation.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(await services.getInvitation(invitation.token)).toMatchObject({ merchant_name: 'Orbit Store', email: 'admin@orbit.store', role: 'admin' });
+    const joined = await services.acceptInvitation(invitation.token, { name: 'Ada Admin', password: 'admin password 123' }, client);
+    expect(joined.user).toMatchObject({ email: 'admin@orbit.store', role: 'admin', name: 'Ada Admin' });
+    await expect(services.acceptInvitation(invitation.token, { name: 'Again', password: 'admin password 123' })).rejects.toMatchObject({ code: 'invitation_not_found' });
+    const adminSession = (await services.authenticateDashboardSession(joined.sessionToken))!;
+
+    // Admins manage members below owner, but cannot create or touch owners.
+    await expect(services.createInvitation(adminSession, 'boss@orbit.store', 'owner')).rejects.toMatchObject({ code: 'insufficient_role' });
+    await expect(services.updateMember(adminSession, ownerSession.user.id, { disabled: true })).rejects.toMatchObject({ code: 'insufficient_role' });
+    await expect(services.updateMember(adminSession, adminSession.user.id, { role: 'viewer' })).rejects.toMatchObject({ code: 'cannot_change_self' });
+    await expect(services.createInvitation(ownerSession, 'admin@orbit.store', 'viewer')).rejects.toMatchObject({ code: 'email_in_use' });
+
+    // Once there is a second owner the first can step down; a developer can no longer touch owners.
+    await services.updateMember(ownerSession, adminSession.user.id, { role: 'owner' });
+    const promoted = (await services.authenticateDashboardSession(joined.sessionToken))!;
+    expect(promoted.user.role).toBe('owner');
+    await services.updateMember(promoted, ownerSession.user.id, { role: 'developer' });
+    await expect(services.updateMember((await services.authenticateDashboardSession(login.sessionToken))!, promoted.user.id, { role: 'admin' }))
+      .rejects.toMatchObject({ code: 'insufficient_role' });
+    const demoted = (await services.authenticateDashboardSession(login.sessionToken))!;
+    expect(demoted.user.role).toBe('developer');
+
+    // Disabling a member ends their sessions at once.
+    await services.updateMember(promoted, demoted.user.id, { disabled: true });
+    expect(await services.authenticateDashboardSession(login.sessionToken)).toBeNull();
+    expect(await services.loginDashboard('owner@orbit.store', 'owner password 123')).toBeNull();
+    const team = await services.listTeam(promoted);
+    expect(team.members.map((member) => [member.email, member.role, member.status])).toEqual([
+      ['admin@orbit.store', 'owner', 'active'], ['owner@orbit.store', 'developer', 'disabled'],
+    ]);
+
+    // A password change keeps the current session and signs out the others.
+    const second = (await services.loginDashboard('admin@orbit.store', 'admin password 123', { ip: '203.0.113.9', userAgent: 'Phone' }))!;
+    expect((await services.listSessions(promoted)).map((item) => item.current).sort()).toEqual([false, true]);
+    expect(await services.changePassword(promoted, 'wrong password', 'next password 1234')).toBe(false);
+    expect(await services.changePassword(promoted, 'admin password 123', 'next password 1234')).toBe(true);
+    expect(await services.authenticateDashboardSession(second.sessionToken)).toBeNull();
+    expect(await services.authenticateDashboardSession(joined.sessionToken)).not.toBeNull();
+    expect(await services.loginDashboard('admin@orbit.store', 'next password 1234')).not.toBeNull();
+    expect(await services.revokeOtherSessions(promoted)).toBe(1);
+
+    expect((await services.renameWorkspace(promoted, ' Orbit Store GmbH ')).name).toBe('Orbit Store GmbH');
+    const actions = (await services.listAuditLog(merchant, { limit: 100, action: 'team' })).data.map((entry) => entry.action);
+    expect(actions).toEqual(expect.arrayContaining(['team.invited', 'team.joined', 'team.role_changed', 'team.member_disabled']));
+    await pool.query("UPDATE merchants SET name = 'Orbit Store' WHERE id = $1", [merchant.id]);
+  });
+
+  it('removes expired idempotency keys and old sessions', async () => {
+    await pool.query("UPDATE idempotency_keys SET expires_at = now() - interval '1 minute' WHERE key = 'late-1'");
+    await new Maintenance(pool).runOnce();
+    expect((await pool.query("SELECT 1 FROM idempotency_keys WHERE key = 'late-1'")).rowCount).toBe(0);
+    expect((await pool.query("SELECT 1 FROM idempotency_keys WHERE key = 'order-1001'")).rowCount).toBe(1);
+  });
+
+  it('pages through invoices created within the same millisecond without skipping any', async () => {
+    const other = (await pool.query<{ id: string; name: string }>("INSERT INTO merchants (name) VALUES ('Paging Store') RETURNING id, name")).rows[0]!;
+    await pool.query(
+      `INSERT INTO invoices (merchant_id, request_amount, request_currency, expires_at, created_at)
+       SELECT $1, '1', 'EUR', now() + interval '1 hour', '2026-01-01T00:00:00.123Z'::timestamptz + (g * interval '1 microsecond')
+       FROM generate_series(1, 7) g`, [other.id],
+    );
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await services.listInvoices(other, { limit: 2, ...(cursor ? { cursor } : {}) });
+      seen.push(...page.data.map((invoice) => invoice.id));
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+    expect(seen).toHaveLength(7);
+    expect(new Set(seen).size).toBe(7);
+  });
+
+  it('filters invoices by several statuses at once', async () => {
+    const open = await services.listInvoices(merchant, { limit: 100, status: ['awaiting_payment', 'created'] });
+    expect(open.data.length).toBeGreaterThan(0);
+    expect(open.data.every((invoice) => ['awaiting_payment', 'created'].includes(invoice.status))).toBe(true);
   });
 });

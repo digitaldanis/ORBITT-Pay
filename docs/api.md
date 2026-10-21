@@ -11,7 +11,7 @@ Send `Authorization: Bearer <secret_key>` on merchant endpoints. Keys carry 256 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/v1/invoices` | Create an invoice; requires `Idempotency-Key` |
-| `GET` | `/v1/invoices` | List invoices; `status`, `search`, `limit` (1–100) and `cursor` filters |
+| `GET` | `/v1/invoices` | List invoices; `status` (one status or a comma-separated list), `search`, `limit` (1–100) and `cursor` filters |
 | `GET` | `/v1/invoices/{id}` | Read one invoice |
 | `GET` | `/v1/invoices/{id}/payments` | On-chain transfers matched to the invoice |
 | `POST` | `/v1/invoices/{id}/cancel` | Cancel an invoice that has received nothing |
@@ -24,7 +24,7 @@ Send `Authorization: Bearer <secret_key>` on merchant endpoints. Keys carry 256 
 | `POST` | `/v1/public/invoices/{id}/payment` | Customer picks `asset` and `network` (no API key) |
 | `POST` | `/v1/public/invoices/{id}/cancel` | Customer cancels an unpaid invoice (no API key) |
 
-The dashboard uses the same services under `/v1/dashboard/*` with session cookies and CSRF protection instead of API keys.
+The dashboard uses the same services under `/v1/dashboard/*` with session cookies and CSRF protection instead of API keys. Dashboard-only routes include `GET /v1/dashboard/invoices/{id}` (invoice with `timeline`, on-chain payments and webhook deliveries), `GET /v1/dashboard/audit-log` (`limit`, `cursor`, and `action` as an area such as `wallet` or an exact action such as `wallet.added`) and `GET /v1/dashboard/audit-log/verify` (`{ intact, entries, broken_at }`). Team management: `GET /v1/dashboard/team`, `POST /v1/dashboard/team/invitations`, `DELETE /v1/dashboard/team/invitations/{id}`, `PATCH /v1/dashboard/team/members/{id}` (`role`, `disabled`), the public `GET /v1/dashboard/invitations/{token}` and `POST /v1/dashboard/invitations/{token}/accept`, `PUT /v1/dashboard/workspace`, `PUT /v1/dashboard/me/password`, and `GET`/`DELETE /v1/dashboard/me/sessions[/{id}]` plus `POST /v1/dashboard/me/sessions/revoke-others`. A change the signed-in role may not make returns `403 insufficient_role`. `GET /v1/dashboard/session` returns the member's `user` (with `role`) and `permissions`.
 
 ## Creating invoices
 

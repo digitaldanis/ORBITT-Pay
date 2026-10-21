@@ -6,6 +6,7 @@ import { middleTruncate, relativeTime } from '../format.js';
 import { Banner, Loading, Modal, PageHeader } from '../ui.js';
 import { useCatalog } from '../catalog.js';
 import { CreateWalletModal } from './wallet-setup.js';
+import { useSession } from '../session.js';
 
 interface NetworkWallet { native: CatalogAsset; tokens: CatalogAsset[]; wallet: Wallet | undefined; health: NetworkHealth | undefined }
 
@@ -58,6 +59,7 @@ function WalletModal({ entry, onClose, onSaved }: { entry: NetworkWallet; onClos
 
 export function AssetsPage({ account, reloadAccount }: { account: Account | null; reloadAccount: () => Promise<void> }) {
   const catalog = useCatalog();
+  const { can } = useSession();
   const [editing, setEditing] = useState<NetworkWallet | null>(null);
   const [creating, setCreating] = useState(false);
   const [message, setMessage] = useState('');
@@ -87,7 +89,7 @@ export function AssetsPage({ account, reloadAccount }: { account: Account | null
 
   return <>
     <PageHeader title="Assets" description="Create a new wallet in one step or connect public keys from a wallet you already use. Every coin and token on a connected network is ready for checkout.">
-      <button className="primary-button" onClick={() => setCreating(true)}><Sparkles size={15} />Create wallet</button>
+      {can('wallets') && <button className="primary-button" onClick={() => setCreating(true)}><Sparkles size={15} />Create wallet</button>}
     </PageHeader>
     {message && <Banner tone="success" onDismiss={() => setMessage('')}>{message}</Banner>}
     {(error || catalog.error) && <Banner tone="error" onDismiss={() => setError('')}>{error || catalog.error}</Banner>}
@@ -121,10 +123,10 @@ export function AssetsPage({ account, reloadAccount }: { account: Account | null
             ) : <p className="muted small-text">{entry.native.address_mode === 'shared' ? 'Connect your wallet address' : 'Connect an account public key'} to accept these assets.</p>}
             <footer>
               <HealthLine health={entry.health} />
-              <div className="inline-actions">
+              {can('wallets') && <div className="inline-actions">
                 {entry.wallet && <button className="icon-button" onClick={() => void remove(entry)} aria-label={`Remove ${entry.native.network_name} wallet`} title="Remove"><Trash2 size={14} /></button>}
                 <button className={entry.wallet ? 'secondary-button small' : 'primary-button small'} onClick={() => setEditing(entry)}>{entry.wallet ? 'Replace' : <><Plus size={13} />Connect</>}</button>
-              </div>
+              </div>}
             </footer>
           </article>
         ))}
