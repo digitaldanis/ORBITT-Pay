@@ -3,6 +3,7 @@ import { ApiError, buildServer, type ApiServices, type InvoiceRecord, type Merch
 import { hashApiKey } from './auth/api-key.js';
 
 const secret = `ob_live_${'x'.repeat(43)}`;
+const owner = { id: '7d1e3f5a-6b2c-4d8e-9f0a-1b2c3d4e5f60', email: 'owner@example.test', name: 'Owner', role: 'owner' as const };
 const merchant: MerchantContext = { id: '4ab9080f-5905-4dcb-a1d2-0d69edfbcf1e', name: 'Example Shop' };
 const invoice: InvoiceRecord = {
   id: '0b9678da-f39f-4b3f-a74e-624eaa36d8bd', order_id: null, amount: '25.00', currency: 'EUR',
@@ -17,7 +18,7 @@ function mockServices(): ApiServices {
     authenticateKey: async (hash) => hash === hashApiKey(secret) ? merchant : null,
     createInvoice: async () => invoice,
     getInvoice: async () => invoice,
-    getInvoiceDetail: async () => ({ invoice, derivation_path: null, payments: [], webhooks: [] }),
+    getInvoiceDetail: async () => ({ invoice, timeline: [], derivation_path: null, payments: [], webhooks: [] }),
     getPublicInvoice: async () => null,
     selectPublicPayment: async () => null,
     cancelPublicInvoice: async () => null,
@@ -39,6 +40,19 @@ function mockServices(): ApiServices {
     listDashboardApiKeys: async () => [],
     createDashboardApiKey: async (_merchant, name) => ({ id: '0b9678da-f39f-4b3f-a74e-624eaa36d8bd', name, key_prefix: 'ob_live_test', secret }),
     revokeDashboardApiKey: async () => true,
+    listAuditLog: async () => ({ data: [], next_cursor: null }),
+    verifyAuditLog: async () => ({ intact: true, entries: 0, broken_at: null }),
+    listTeam: async () => ({ members: [], invitations: [] }),
+    createInvitation: async (_session, email, role) => ({ id: invoice.id, email, role, invited_by: owner.email, created_at: invoice.created_at, expires_at: invoice.expires_at, token: 't'.repeat(43) }),
+    revokeInvitation: async () => true,
+    updateMember: async () => null,
+    getInvitation: async () => null,
+    acceptInvitation: async () => { throw new ApiError(404, 'invitation_not_found', 'Not found.'); },
+    changePassword: async () => true,
+    listSessions: async () => [],
+    revokeSession: async () => true,
+    revokeOtherSessions: async () => 0,
+    renameWorkspace: async (_session, name) => ({ id: merchant.id, name }),
   };
 }
 
@@ -112,13 +126,14 @@ describe('merchant API', () => {
     const services = mockServices();
     const sessionToken = 'session_token_abcdefghijklmnopqrstuvwxyz';
     const csrfToken = 'csrf_token_abcdefghijklmnopqrstuvwxyz';
-    services.loginDashboard = async () => ({ sessionToken, csrfToken, merchant, email: 'owner@example.test' });
+    services.loginDashboard = async () => ({ sessionToken, csrfToken, merchant, email: owner.email, user: owner });
     services.authenticateDashboardSession = async (token) => token === sessionToken
-      ? { merchant, email: 'owner@example.test', csrfHash: hashApiKey(csrfToken) }
+      ? { merchant, email: owner.email, csrfHash: hashApiKey(csrfToken), sessionId: invoice.id, user: owner }
       : null;
     const app = await buildServer(services, { logger: false });
     const login = await app.inject({ method: 'POST', url: '/v1/dashboard/login', payload: { email: 'owner@example.test', password: 'a long password' } });
     expect(login.statusCode).toBe(200);
+    expect(login.json()).toMatchObject({ user: { role: 'owner' }, permissions: ['payments', 'developers', 'wallets', 'team', 'workspace'] });
     const setCookies = login.headers['set-cookie'];
     expect(setCookies).toBeDefined();
     const cookies = Array.isArray(setCookies) ? setCookies : [setCookies!];
@@ -166,13 +181,47 @@ describe('merchant API', () => {
     const services = mockServices();
     const sessionToken = 'session_token_abcdefghijklmnopqrstuvwxyz';
     const csrfToken = 'csrf_token_abcdefghijklmnopqrstuvwxyz';
-    services.authenticateDashboardSession = async () => ({ merchant, email: 'owner@example.test', csrfHash: hashApiKey(csrfToken) });
+    services.authenticateDashboardSession = async () => ({ merchant, email: owner.email, csrfHash: hashApiKey(csrfToken), sessionId: invoice.id, user: owner });
     const app = await buildServer(services, { logger: false });
     const headers = { cookie: `ob_session=${sessionToken}; ob_csrf=${csrfToken}`, 'x-csrf-token': csrfToken };
     const invalid = await app.inject({ method: 'PUT', url: '/v1/dashboard/account/wallets', headers, payload: { wallets: 'nope' } });
     expect(invalid.statusCode).toBe(400);
     const valid = await app.inject({ method: 'PUT', url: '/v1/dashboard/account/wallets', headers, payload: { wallets: [{ asset: 'BTC', network: 'bitcoin', extended_public_key: 'zpub' }] } });
     expect(valid.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('enforces roles on dashboard changes while letting every member read', async () => {
+    const services = mockServices();
+    const csrfToken = 'csrf_token_abcdefghijklmnopqrstuvwxyz';
+    let role: 'owner' | 'admin' | 'developer' | 'viewer' = 'viewer';
+    services.authenticateDashboardSession = async () => ({ merchant, email: owner.email, csrfHash: hashApiKey(csrfToken), sessionId: invoice.id, user: { ...owner, role } });
+    const app = await buildServer(services, { logger: false });
+    const headers = { cookie: `ob_session=session_token_abcdefghijklmnopqrstuvwxyz; ob_csrf=${csrfToken}`, 'x-csrf-token': csrfToken };
+    const wallet = { method: 'PUT' as const, url: '/v1/dashboard/account/wallets', headers, payload: { wallets: [{ asset: 'BTC', network: 'bitcoin', extended_public_key: 'zpub' }] } };
+    const apiKey = { method: 'POST' as const, url: '/v1/dashboard/api-keys', headers, payload: { name: 'Server' } };
+    const invite = { method: 'POST' as const, url: '/v1/dashboard/team/invitations', headers, payload: { email: 'dev@example.test', role: 'developer' } };
+
+    expect((await app.inject({ method: 'GET', url: '/v1/dashboard/invoices', headers })).statusCode).toBe(200);
+    const denied = await app.inject(wallet);
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error.code).toBe('insufficient_role');
+    expect((await app.inject(apiKey)).statusCode).toBe(403);
+
+    role = 'developer';
+    expect((await app.inject(apiKey)).statusCode).toBe(201);
+    expect((await app.inject(wallet)).statusCode).toBe(403);
+    expect((await app.inject(invite)).statusCode).toBe(403);
+
+    role = 'admin';
+    expect((await app.inject(wallet)).statusCode).toBe(200);
+    expect((await app.inject(invite)).statusCode).toBe(201);
+    expect((await app.inject({ method: 'PUT', url: '/v1/dashboard/workspace', headers, payload: { name: 'New name' } })).statusCode).toBe(403);
+
+    role = 'owner';
+    expect((await app.inject({ method: 'PUT', url: '/v1/dashboard/workspace', headers, payload: { name: 'New name' } })).json()).toEqual({ id: merchant.id, name: 'New name' });
+    // Passwords below 12 characters never reach the service.
+    expect((await app.inject({ method: 'PUT', url: '/v1/dashboard/me/password', headers, payload: { current_password: 'x', new_password: 'short' } })).statusCode).toBe(400);
     await app.close();
   });
 });

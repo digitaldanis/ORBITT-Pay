@@ -3,6 +3,8 @@ import {
 } from 'drizzle-orm';
 import {
   bigint,
+  char,
+  inet,
   integer,
   jsonb,
   pgEnum,
@@ -63,6 +65,10 @@ export const invoices = pgTable('invoices', {
   cancelUrl: text('cancel_url'),
   webhookUrl: text('webhook_url'),
   status: invoiceStatus('status').notNull().default('created'),
+  /** Set by the `invoices_lifecycle` trigger when the invoice becomes paid. */
+  paidAt: timestamp('paid_at', { withTimezone: true }),
+  /** Set by the trigger when the invoice reaches a final status. */
+  closedAt: timestamp('closed_at', { withTimezone: true }),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -177,4 +183,32 @@ export const dashboardSessions = pgTable('dashboard_sessions', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
+});
+
+/** Written by the `invoices_status_history` trigger; never insert from application code. */
+export const invoiceStatusHistory = pgTable('invoice_status_history', {
+  id: bigint('id', { mode: 'bigint' }).primaryKey().generatedAlwaysAsIdentity(),
+  invoiceId: uuid('invoice_id').notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  merchantId: uuid('merchant_id').notNull().references(() => merchants.id),
+  fromStatus: invoiceStatus('from_status'),
+  toStatus: invoiceStatus('to_status').notNull(),
+  receivedAmountBaseUnits: text('received_amount_base_units').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+/** Append-only; `previous_hash`, `hash` and `created_at` are filled by the `audit_log_chain` trigger. */
+export const auditLog = pgTable('audit_log', {
+  id: bigint('id', { mode: 'bigint' }).primaryKey().generatedAlwaysAsIdentity(),
+  merchantId: uuid('merchant_id').notNull().references(() => merchants.id),
+  actorType: varchar('actor_type', { length: 16 }).notNull(),
+  actorId: uuid('actor_id'),
+  actorLabel: varchar('actor_label', { length: 320 }),
+  action: varchar('action', { length: 64 }).notNull(),
+  targetType: varchar('target_type', { length: 32 }),
+  targetId: text('target_id'),
+  details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+  ip: inet('ip'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  previousHash: char('previous_hash', { length: 64 }).notNull(),
+  hash: char('hash', { length: 64 }).notNull(),
 });

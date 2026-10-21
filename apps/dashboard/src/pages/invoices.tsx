@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { ArrowUpRight, ChevronRight, CreditCard, ExternalLink, Link2, Plus, RefreshCw, RotateCw, Search } from 'lucide-react';
 import { CoinIcon, explorerTransactionUrl } from '@orbitt/ui';
 import { api, errorMessage, OPEN_STATUSES, type Invoice, type InvoiceDetail } from '../api.js';
-import { dateLabel, formatFiat, middleTruncate, relativeTime } from '../format.js';
+import { dateLabel, formatFiat, middleTruncate, relativeTime, statusLabel, statusTone } from '../format.js';
 import { Banner, CopyButton, DetailRow, Drawer, EmptyState, Loading, Modal, PageHeader, StatusBadge, useResource } from '../ui.js';
 import { useCatalog } from '../catalog.js';
+import { useSession } from '../session.js';
 
 export function InvoiceTable({ invoices, onOpen, compact = false }: { invoices: Invoice[]; onOpen: (id: string) => void; compact?: boolean }) {
   const { networkName } = useCatalog();
@@ -41,6 +42,7 @@ const FILTERS: Array<{ label: string; status: string }> = [
 ];
 
 export function InvoicesPage({ paidOnly = false, onOpen, refreshKey }: { paidOnly?: boolean; onOpen: (id: string) => void; refreshKey: number }) {
+  const { can } = useSession();
   const [status, setStatus] = useState(paidOnly ? 'paid' : '');
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
@@ -86,7 +88,7 @@ export function InvoicesPage({ paidOnly = false, onOpen, refreshKey }: { paidOnl
 
   return <>
     <PageHeader title={paidOnly ? 'Payments' : 'Invoices'} description={paidOnly ? 'Completed payments received by your store.' : 'Every payment request, from created to confirmed on chain.'}>
-      {!paidOnly && <button className="primary-button" onClick={() => setCreating(true)}><Plus size={15} />New payment link</button>}
+      {!paidOnly && can('payments') && <button className="primary-button" onClick={() => setCreating(true)}><Plus size={15} />New payment link</button>}
     </PageHeader>
     <section className="panel">
       <div className="toolbar">
@@ -176,6 +178,7 @@ export function CreateLinkModal({ onClose, onCreated }: { onClose: () => void; o
 function amountDiffers(value: string): boolean { return !/^0(\.0*)?$/.test(value); }
 
 export function InvoiceDrawer({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
+  const { can } = useSession();
   const { networkName, find } = useCatalog();
   const load = useCallback(() => api<InvoiceDetail>(`/v1/dashboard/invoices/${id}`), [id]);
   const { data, error, loading, reload } = useResource(load, 'The invoice could not be loaded.');
@@ -198,7 +201,7 @@ export function InvoiceDrawer({ id, onClose, onChanged }: { id: string; onClose:
 
   const invoice = data?.invoice;
   const asset = invoice?.asset && invoice.network ? find(invoice.asset, invoice.network) : undefined;
-  const cancellable = invoice && ['created', 'awaiting_payment'].includes(invoice.status) && !amountDiffers(invoice.received_amount);
+  const cancellable = can('payments') && invoice && ['created', 'awaiting_payment'].includes(invoice.status) && !amountDiffers(invoice.received_amount);
 
   return (
     <Drawer title={invoice?.order_id || 'Invoice'} subtitle={<span className="mono">{id}</span>} onClose={onClose}>
@@ -240,6 +243,18 @@ export function InvoiceDrawer({ id, onClose, onChanged }: { id: string; onClose:
           <DetailRow label="Last update">{dateLabel(invoice.updated_at)}</DetailRow>
         </div>
 
+        {data.timeline.length > 0 && <>
+          <h3 className="section-title">Timeline</h3>
+          <ol className="timeline">
+            {data.timeline.map((entry, index) => (
+              <li key={`${entry.status}-${entry.at}-${index}`} className={`tone-dot-${statusTone(entry.status)}`}>
+                <div><strong>{statusLabel(entry.status)}</strong>{invoice.asset && amountDiffers(entry.received_amount) && <span className="mono">{entry.received_amount} {invoice.asset} received</span>}</div>
+                <time dateTime={entry.at} title={dateLabel(entry.at)}>{relativeTime(entry.at)}</time>
+              </li>
+            ))}
+          </ol>
+        </>}
+
         <h3 className="section-title">On-chain payments <span className="count">{data.payments.length}</span></h3>
         {!data.payments.length ? <p className="muted small-text">No transfer seen yet. The scanner checks every network continuously.</p> : (
           <ul className="event-list">
@@ -263,7 +278,7 @@ export function InvoiceDrawer({ id, onClose, onChanged }: { id: string; onClose:
                 <div><strong>{delivery.event}</strong><span>{delivery.attempts} {delivery.attempts === 1 ? 'attempt' : 'attempts'}{delivery.http_status ? ` · HTTP ${delivery.http_status}` : ''} · {relativeTime(delivery.created_at)}</span>{delivery.last_error && <span className="error-text">{delivery.last_error}</span>}</div>
                 <div className="inline-actions">
                   <StatusBadge status={delivery.status} />
-                  {delivery.status !== 'pending' && <button className="icon-button" disabled={busy === delivery.id} onClick={() => void redeliver(delivery.id)} aria-label="Send again" title="Send again"><RotateCw size={14} /></button>}
+                  {delivery.status !== 'pending' && can('developers') && <button className="icon-button" disabled={busy === delivery.id} onClick={() => void redeliver(delivery.id)} aria-label="Send again" title="Send again"><RotateCw size={14} /></button>}
                 </div>
               </li>
             ))}

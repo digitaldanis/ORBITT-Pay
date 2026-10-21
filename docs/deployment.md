@@ -48,7 +48,7 @@ The first webhook configuration in dashboard Settings creates a signing secret a
 
 View service health and logs with `docker compose ps` and `docker compose logs -f api worker`. Restart services with `docker compose restart api worker`. Migrations run automatically on API start and use a PostgreSQL advisory lock.
 
-The `orbitt_postgres` named volume contains merchants, API keys, invoices, derivation indexes, webhook events, attempts, and dashboard sessions. Back it up regularly. A logical backup can be written from the host with:
+The `orbitt_postgres` named volume contains merchants, API keys, invoices and their status history, derivation indexes, webhook events, attempts, dashboard sessions and the audit log. Back it up regularly. A logical backup can be written from the host with:
 
 ```sh
 docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip > orbitt-postgres.sql.gz

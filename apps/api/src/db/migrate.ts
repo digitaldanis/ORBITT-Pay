@@ -9,6 +9,8 @@ export async function migrateDatabase(pool: Pool): Promise<string[]> {
   const client = await pool.connect();
   const applied: string[] = [];
   try {
+    // Migrations may backfill large tables; the pool's statement timeout is for request traffic.
+    await client.query('SET statement_timeout = 0');
     await client.query('SELECT pg_advisory_lock($1)', [725019432]);
     await client.query('CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
     const existing = await client.query<{ name: string }>('SELECT name FROM schema_migrations');

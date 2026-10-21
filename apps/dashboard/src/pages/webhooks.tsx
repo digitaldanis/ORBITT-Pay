@@ -4,8 +4,10 @@ import { api, errorMessage, type Account, type WebhookDelivery } from '../api.js
 import { dateLabel, relativeTime } from '../format.js';
 import { Banner, EmptyState, Loading, PageHeader, StatusBadge, useResource } from '../ui.js';
 import type { Page } from '../Dashboard.js';
+import { useSession } from '../session.js';
 
 export function WebhooksPage({ account, onOpenInvoice, go }: { account: Account | null; onOpenInvoice: (id: string) => void; go: (page: Page) => void }) {
+  const { can } = useSession();
   const load = useCallback(() => api<WebhookDelivery[]>('/v1/dashboard/webhooks'), []);
   const { data, error, loading, reload } = useResource(load, 'Webhook deliveries could not be loaded.');
   const [busy, setBusy] = useState('');
@@ -24,7 +26,7 @@ export function WebhooksPage({ account, onOpenInvoice, go }: { account: Account 
   return <>
     <PageHeader title="Webhooks" description="Signed events for every invoice change, retried with backoff until your endpoint answers 2xx.">
       <button className="secondary-button" onClick={() => void reload()} disabled={loading}><RefreshCw size={14} className={loading ? 'spin' : undefined} />Refresh</button>
-      <button className="primary-button" disabled={busy === 'test' || !account?.webhook.url} onClick={() => void run('test', '/v1/dashboard/webhooks/test', 'Test event queued.')}><Send size={14} />Send test event</button>
+      {can('developers') && <button className="primary-button" disabled={busy === 'test' || !account?.webhook.url} onClick={() => void run('test', '/v1/dashboard/webhooks/test', 'Test event queued.')}><Send size={14} />Send test event</button>}
     </PageHeader>
     {!account?.webhook.url && <Banner tone="warning">No endpoint configured yet. <button className="link-button" onClick={() => go('Settings')}>Add one in Settings</button>.</Banner>}
     {message && <Banner tone="success" onDismiss={() => setMessage('')}>{message}</Banner>}
@@ -47,7 +49,7 @@ export function WebhooksPage({ account, onOpenInvoice, go }: { account: Account 
                   <td>{delivery.attempts}</td>
                   <td>{delivery.http_status ? <span className={delivery.http_status < 300 ? 'success-text' : 'error-text'}>HTTP {delivery.http_status}</span> : '—'}{delivery.last_error && <small className="error-text" title={delivery.last_error}>{delivery.last_error.slice(0, 60)}</small>}</td>
                   <td className="date-cell" title={dateLabel(delivery.created_at)}>{relativeTime(delivery.created_at)}</td>
-                  <td className="actions-cell">{delivery.status === 'failed'
+                  <td className="actions-cell">{!can('developers') ? null : delivery.status === 'failed'
                     ? <button className="secondary-button small" disabled={busy === delivery.id} onClick={() => void run(delivery.id, `/v1/dashboard/webhooks/${delivery.id}/redeliver`, 'Delivery queued again.')}><RotateCw size={13} />Retry</button>
                     : delivery.status === 'delivered' && <button className="icon-button" disabled={busy === delivery.id} onClick={() => void run(delivery.id, `/v1/dashboard/webhooks/${delivery.id}/redeliver`, 'Delivery queued again.')} aria-label="Send again" title="Send again"><RotateCw size={14} /></button>}</td>
                 </tr>

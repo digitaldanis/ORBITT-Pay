@@ -39,7 +39,21 @@ export interface WebhookDelivery {
   next_attempt_at: string | null;
 }
 
-export interface InvoiceDetail { invoice: Invoice; derivation_path: string | null; payments: Payment[]; webhooks: WebhookDelivery[] }
+export interface TimelineEntry { status: InvoiceStatus; from_status: InvoiceStatus | null; received_amount: string; at: string }
+
+export interface InvoiceDetail { invoice: Invoice; timeline: TimelineEntry[]; derivation_path: string | null; payments: Payment[]; webhooks: WebhookDelivery[] }
+
+export interface AuditEntry {
+  id: string;
+  action: string;
+  actor: { type: 'user' | 'api_key' | 'system'; id: string | null; label: string | null };
+  target: { type: string; id: string } | null;
+  details: Record<string, unknown>;
+  ip: string | null;
+  created_at: string;
+}
+
+export interface AuditVerification { intact: boolean; entries: number; broken_at: string | null }
 
 export interface Wallet {
   asset: string;
@@ -83,7 +97,20 @@ export interface Overview {
   recent: Invoice[];
 }
 
-export interface DashboardSession { merchant: { id: string; name: string }; email: string }
+export type Role = 'owner' | 'admin' | 'developer' | 'viewer';
+export const ROLES: Role[] = ['owner', 'admin', 'developer', 'viewer'];
+export type Permission = 'payments' | 'developers' | 'wallets' | 'team' | 'workspace';
+
+export interface DashboardSession {
+  merchant: { id: string; name: string };
+  email: string;
+  user: { id: string; email: string; name: string | null; role: Role };
+  permissions: Permission[];
+}
+
+export interface TeamMember { id: string; email: string; name: string | null; role: Role; status: 'active' | 'disabled'; created_at: string; last_login_at: string | null }
+export interface TeamInvitation { id: string; email: string; role: Role; invited_by: string | null; created_at: string; expires_at: string; token?: string }
+export interface SessionRecord { id: string; ip: string | null; user_agent: string | null; created_at: string; last_seen_at: string; expires_at: string; current: boolean }
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
 

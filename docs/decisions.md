@@ -44,3 +44,21 @@ The repository starts as an npm workspace monorepo. Applications and packages ar
 - Required confirmations are stored on the invoice when the coin is picked (`required_confirmations`), so changing `CONFIRMATIONS_<NETWORK>` never changes the rule for an invoice already being paid. `invoice.confirming` fires once the full amount is seen.
 - Known limit: transfers removed by a chain reorganization after being counted are not rolled back automatically; confirmation depth is the safeguard.
 
+## Ledger and audit
+
+- Status history is written by a database trigger (`invoice_status_history`), not by application code, so the API, the worker and manual SQL all leave the same trace. It backs the invoice timeline.
+- `paid_at` and `closed_at` are set by trigger when an invoice first becomes paid or final. Reporting groups by `paid_at`; `updated_at` keeps moving when a late transfer or a confirmation refresh touches the row and is not a payment date.
+- Amount columns stay `text` (no float ever touches money) but carry `CHECK` constraints: base units are non-negative integers, request amounts plain decimals.
+- The audit log is append-only by trigger and hash-chained per merchant (`sha256(previous_hash | fields | created_at)`), with writers serialised by a per-merchant advisory lock. This makes tampering detectable without an external service. It does not stop a database superuser from rewriting the whole chain; for that, export `orbitt_verify_audit_log` results or the latest hash to separate storage.
+- API-created invoices are not audited individually; their lifecycle is in the status history and the audit log stays readable at shop volume.
+- The worker runs hourly maintenance: expired idempotency keys are deleted, sessions a week after they expired or were revoked.
+- Connection pools set `statement_timeout` and `idle_in_transaction_session_timeout`, so a stuck query cannot hold invoice row locks. Migrations lift the statement timeout for backfills.
+
+## Team and roles
+
+- Four fixed roles (owner, admin, developer, viewer) mapped to five permissions (`payments`, `developers`, `wallets`, `team`, `workspace`) in `apps/api/src/auth/roles.ts`. Reads are open to every member; only writes are gated. The session endpoint returns the permissions, so the dashboard hides actions without a second copy of the rules.
+- The role is read from the database on every request rather than stored in the session, so changes apply at once.
+- Invitations are links, not emails: the stack has no mail service, and a link the inviter forwards keeps it that way. Tokens are 256-bit, stored as SHA-256, valid for seven days, single use.
+- New `merchant_users` rows default to `viewer`; the CLIs and invitations set the role explicitly, so a forgotten value never grants more than read access.
+- Removing the last active owner is refused inside a transaction that locks the workspace's members.
+- Two-factor authentication is still open and is the next item for dashboard security.

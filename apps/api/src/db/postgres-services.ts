@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
 import { hash as hashPassword, verify as verifyPassword, Algorithm } from '@node-rs/argon2';
 import type { Pool, PoolClient } from 'pg';
 import { isSolanaWalletAddress, parseAccountPublicKey } from '@orbitt/chains';
@@ -7,9 +8,10 @@ import type { AddressMode, AssetDefinition, InvoiceRow } from '@orbitt/core';
 import { encryptSecret, enqueueInvoiceEvent } from '@orbitt/webhooks';
 import { createApiKey } from '../auth/api-key.js';
 import { ApiError } from '../errors.js';
+import { canAssignRole, type Role } from '../auth/roles.js';
 import type {
-  ApiServices, AssetRecord, CreateInvoiceInput, DashboardLogin, DashboardSession, InvoiceDetail, InvoiceListQuery,
-  InvoiceRecord, MerchantContext, PublicInvoiceRecord, WalletInput,
+  ApiServices, AssetRecord, AuditEntry, ClientInfo, CreateInvoiceInput, DashboardLogin, DashboardSession, InvoiceDetail, InvoiceListQuery,
+  InvoiceRecord, InvoiceTimelineEntry, MerchantContext, PublicInvoiceRecord, SessionRecord, TeamInvitation, TeamMember, WalletInput,
 } from '../server.js';
 
 export interface PaymentSelection {
@@ -76,6 +78,44 @@ function sha256Hex(value: string): string {
 
 const DUMMY_PASSWORD_HASH = hashPassword('invalid dashboard password placeholder', { algorithm: Algorithm.Argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1, outputLen: 32 });
 
+const MEMBER_COLUMNS = 'id, email, name, role, disabled_at, created_at, last_login_at';
+type MemberRow = { id: string; email: string; name: string | null; role: Role; disabled_at: Date | null; created_at: Date; last_login_at: Date | null };
+
+function toMember(row: MemberRow): TeamMember {
+  return {
+    id: row.id, email: row.email, name: row.name, role: row.role, status: row.disabled_at ? 'disabled' : 'active',
+    created_at: row.created_at.toISOString(), last_login_at: row.last_login_at?.toISOString() ?? null,
+  };
+}
+
+type Queryable = Pool | PoolClient;
+
+interface AuditTarget { type: string; id: string }
+
+interface UserRow { user_id: string; merchant_id: string; merchant_name: string; email: string; name: string | null; role: Role }
+
+function validIp(ip: string | null | undefined): string | null {
+  return ip && isIP(ip) ? ip : null;
+}
+
+function userContext(user: UserRow, client: ClientInfo = {}): MerchantContext {
+  return { id: user.merchant_id, name: user.merchant_name, actor: { type: 'user', id: user.user_id, label: user.email, ip: client.ip ?? null } };
+}
+
+const PASSWORD_OPTIONS = { algorithm: Algorithm.Argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1, outputLen: 32 } as const;
+const INVITATION_DAYS = 7;
+
+/** Writes one audit entry; the database links it into the merchant's hash chain. */
+async function audit(db: Queryable, merchant: MerchantContext, action: string, target: AuditTarget | null = null, details: Record<string, unknown> = {}): Promise<void> {
+  const actor = merchant.actor ?? { type: 'system' as const, id: null, label: null };
+  const ip = validIp(actor.ip);
+  await db.query(
+    `INSERT INTO audit_log (merchant_id, actor_type, actor_id, actor_label, action, target_type, target_id, details, ip)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [merchant.id, actor.type, actor.id, actor.label, action, target?.type ?? null, target?.id ?? null, JSON.stringify(details), ip],
+  );
+}
+
 function assertWebhookUrl(value: string): void {
   let url: URL;
   try { url = new URL(value); } catch { throw new ApiError(400, 'invalid_webhook_url', 'Webhook URL must be a valid HTTP or HTTPS URL.', 'webhook_url'); }
@@ -114,56 +154,89 @@ export class PostgresApiServices implements ApiServices {
   }
 
   async authenticateKey(keyHash: string): Promise<MerchantContext | null> {
-    const result = await this.pool.query<MerchantContext>(
+    const result = await this.pool.query<{ id: string; name: string; key_id: string; key_prefix: string }>(
       `WITH used AS (
          UPDATE api_keys SET last_used_at = now()
-         WHERE key_hash = $1 AND revoked_at IS NULL RETURNING merchant_id
+         WHERE key_hash = $1 AND revoked_at IS NULL RETURNING id, merchant_id, key_prefix
        )
-       SELECT m.id, m.name FROM merchants m JOIN used ON used.merchant_id = m.id`, [keyHash],
+       SELECT m.id, m.name, used.id AS key_id, used.key_prefix FROM merchants m JOIN used ON used.merchant_id = m.id`, [keyHash],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    return row ? { id: row.id, name: row.name, actor: { type: 'api_key', id: row.key_id, label: `${row.key_prefix}…` } } : null;
   }
 
-  async loginDashboard(email: string, password: string): Promise<DashboardLogin | null> {
+  async loginDashboard(email: string, password: string, client: ClientInfo = {}): Promise<DashboardLogin | null> {
     const normalizedEmail = email.trim().toLowerCase();
-    const userResult = await this.pool.query<{ user_id: string; merchant_id: string; email: string; password_hash: string; disabled_at: Date | null; merchant_name: string }>(
-      `SELECT u.id AS user_id, u.merchant_id, u.email, u.password_hash, u.disabled_at, m.name AS merchant_name
+    const userResult = await this.pool.query<UserRow & { password_hash: string; disabled_at: Date | null }>(
+      `SELECT u.id AS user_id, u.merchant_id, m.name AS merchant_name, u.email, u.name, u.role, u.password_hash, u.disabled_at
        FROM merchant_users u JOIN merchants m ON m.id = u.merchant_id WHERE lower(u.email) = $1`, [normalizedEmail],
     );
     const user = userResult.rows[0];
     let valid = false;
     try { valid = await verifyPassword(user?.password_hash ?? await DUMMY_PASSWORD_HASH, password); }
     catch { valid = false; }
+    if (user && (user.disabled_at || !valid)) {
+      await audit(this.pool, userContext(user, client), 'user.sign_in_failed', { type: 'user', id: user.user_id }, { reason: user.disabled_at ? 'disabled' : 'invalid_password' });
+    }
     if (!user || user.disabled_at || !valid) return null;
+    return this.transaction(async (db) => {
+      const login = await this.openSession(db, user, client);
+      await audit(db, userContext(user, client), 'user.signed_in', { type: 'user', id: user.user_id });
+      return login;
+    });
+  }
 
+  private async openSession(db: PoolClient, user: UserRow, client: ClientInfo): Promise<DashboardLogin> {
     const sessionToken = randomBytes(32).toString('base64url');
     const csrfToken = randomBytes(32).toString('base64url');
-    await this.pool.query(
-      `INSERT INTO dashboard_sessions (user_id, token_hash, csrf_hash, expires_at)
-       VALUES ($1, $2, $3, now() + interval '8 hours')`,
-      [user.user_id, sha256Hex(sessionToken), sha256Hex(csrfToken)],
+    await db.query(
+      `INSERT INTO dashboard_sessions (user_id, token_hash, csrf_hash, expires_at, ip, user_agent)
+       VALUES ($1, $2, $3, now() + interval '8 hours', $4, $5)`,
+      [user.user_id, sha256Hex(sessionToken), sha256Hex(csrfToken), validIp(client.ip), client.userAgent?.slice(0, 512) ?? null],
     );
-    // Opportunistic cleanup keeps the sessions table small without a separate job.
-    await this.pool.query(`DELETE FROM dashboard_sessions WHERE expires_at < now() - interval '7 days'`);
-    return { sessionToken, csrfToken, merchant: { id: user.merchant_id, name: user.merchant_name }, email: user.email };
+    await db.query('UPDATE merchant_users SET last_login_at = now() WHERE id = $1', [user.user_id]);
+    return {
+      sessionToken, csrfToken,
+      merchant: { id: user.merchant_id, name: user.merchant_name },
+      email: user.email,
+      user: { id: user.user_id, email: user.email, name: user.name, role: user.role },
+    };
   }
 
   async authenticateDashboardSession(sessionToken: string): Promise<DashboardSession | null> {
-    const result = await this.pool.query<{ id: string; name: string; email: string; csrf_hash: string }>(
-      `SELECT m.id, m.name, u.email, s.csrf_hash FROM dashboard_sessions s
-       JOIN merchant_users u ON u.id = s.user_id JOIN merchants m ON m.id = u.merchant_id
-       WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.disabled_at IS NULL`,
+    const result = await this.pool.query<UserRow & { session_id: string; csrf_hash: string }>(
+      `WITH session AS (
+         SELECT s.id AS session_id, s.csrf_hash, s.last_seen_at, u.id AS user_id, u.merchant_id, m.name AS merchant_name, u.email, u.name, u.role
+         FROM dashboard_sessions s JOIN merchant_users u ON u.id = s.user_id JOIN merchants m ON m.id = u.merchant_id
+         WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.disabled_at IS NULL
+       ), touched AS (
+         -- At most one write a minute per session keeps "last active" useful without a write per request.
+         UPDATE dashboard_sessions SET last_seen_at = now()
+         WHERE id = (SELECT session_id FROM session) AND last_seen_at < now() - interval '1 minute'
+       )
+       SELECT session_id, csrf_hash, user_id, merchant_id, merchant_name, email, name, role FROM session`,
       [sha256Hex(sessionToken)],
     );
     const row = result.rows[0];
-    return row ? { merchant: { id: row.id, name: row.name }, email: row.email, csrfHash: row.csrf_hash } : null;
+    if (!row) return null;
+    return {
+      merchant: userContext(row),
+      email: row.email,
+      csrfHash: row.csrf_hash,
+      sessionId: row.session_id,
+      user: { id: row.user_id, email: row.email, name: row.name, role: row.role },
+    };
   }
 
   async revokeDashboardSession(sessionToken: string): Promise<void> {
-    await this.pool.query(
-      'UPDATE dashboard_sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL',
+    const revoked = await this.pool.query<{ user_id: string; merchant_id: string; email: string }>(
+      `UPDATE dashboard_sessions s SET revoked_at = now() FROM merchant_users u
+       WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND u.id = s.user_id
+       RETURNING s.user_id, u.merchant_id, u.email`,
       [sha256Hex(sessionToken)],
     );
+    const row = revoked.rows[0];
+    if (row) await audit(this.pool, { id: row.merchant_id, name: '', actor: { type: 'user', id: row.user_id, label: row.email } }, 'user.signed_out', { type: 'user', id: row.user_id });
   }
 
   async getDashboardOverview(merchant: MerchantContext): Promise<Record<string, unknown>> {
@@ -173,13 +246,13 @@ export class PostgresApiServices implements ApiServices {
        count(*) FILTER (WHERE status IN ${OPEN_STATUSES})::int AS pending,
        count(*) FILTER (WHERE status = 'expired')::int AS expired,
        count(*) FILTER (WHERE status IN ('underpaid', 'late_payment') OR (status = 'paid' AND surplus_base_units <> '0'))::int AS attention,
-       count(*) FILTER (WHERE status = 'paid' AND updated_at >= date_trunc('day', now()))::int AS paid_today
+       count(*) FILTER (WHERE status = 'paid' AND paid_at >= date_trunc('day', now()))::int AS paid_today
        FROM invoices WHERE merchant_id = $1`, [merchant.id],
     );
     const volume = await this.pool.query<{ day: string; currency: string; amount: string; count: number }>(
-      `SELECT to_char(date_trunc('day', updated_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+      `SELECT to_char(date_trunc('day', paid_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
        request_currency AS currency, sum(request_amount::numeric)::text AS amount, count(*)::int AS count
-       FROM invoices WHERE merchant_id = $1 AND status = 'paid' AND updated_at > now() - interval '14 days'
+       FROM invoices WHERE merchant_id = $1 AND status = 'paid' AND paid_at > now() - interval '14 days'
        GROUP BY 1, 2 ORDER BY 1`, [merchant.id],
     );
     const recent = await this.listInvoices(merchant, { limit: 8 });
@@ -208,11 +281,16 @@ export class PostgresApiServices implements ApiServices {
   }
 
   async redeliverWebhook(merchant: MerchantContext, deliveryId: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE webhook_deliveries SET status = 'pending', next_attempt_at = now(), locked_until = NULL
-       WHERE merchant_id = $1 AND id = $2 AND status IN ('delivered', 'failed', 'pending')`, [merchant.id, deliveryId],
-    );
-    return result.rowCount === 1;
+    return this.transaction(async (client) => {
+      const result = await client.query<{ event_type: string; invoice_id: string | null }>(
+        `UPDATE webhook_deliveries SET status = 'pending', next_attempt_at = now(), locked_until = NULL
+         WHERE merchant_id = $1 AND id = $2 AND status IN ('delivered', 'failed', 'pending') RETURNING event_type, invoice_id`, [merchant.id, deliveryId],
+      );
+      const row = result.rows[0];
+      if (!row) return false;
+      await audit(client, merchant, 'webhook.redelivered', { type: 'webhook_delivery', id: deliveryId }, { event: row.event_type, invoice_id: row.invoice_id });
+      return true;
+    });
   }
 
   async listDashboardApiKeys(merchant: MerchantContext): Promise<Array<Record<string, unknown>>> {
@@ -231,19 +309,28 @@ export class PostgresApiServices implements ApiServices {
 
   async createDashboardApiKey(merchant: MerchantContext, name: string): Promise<{ id: string; name: string; key_prefix: string; secret: string }> {
     const key = createApiKey();
-    const result = await this.pool.query<{ id: string }>(
-      `INSERT INTO api_keys (merchant_id, name, key_hash, key_prefix) VALUES ($1, $2, $3, $4) RETURNING id`,
-      [merchant.id, name.trim(), key.hash, key.prefix],
-    );
-    return { id: result.rows[0]!.id, name: name.trim(), key_prefix: key.prefix, secret: key.secret };
+    return this.transaction(async (client) => {
+      const result = await client.query<{ id: string }>(
+        `INSERT INTO api_keys (merchant_id, name, key_hash, key_prefix) VALUES ($1, $2, $3, $4) RETURNING id`,
+        [merchant.id, name.trim(), key.hash, key.prefix],
+      );
+      const id = result.rows[0]!.id;
+      await audit(client, merchant, 'api_key.created', { type: 'api_key', id }, { name: name.trim(), key_prefix: key.prefix });
+      return { id, name: name.trim(), key_prefix: key.prefix, secret: key.secret };
+    });
   }
 
   async revokeDashboardApiKey(merchant: MerchantContext, id: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE api_keys SET revoked_at = now() WHERE merchant_id = $1 AND id = $2 AND revoked_at IS NULL`,
-      [merchant.id, id],
-    );
-    return result.rowCount === 1;
+    return this.transaction(async (client) => {
+      const result = await client.query<{ name: string; key_prefix: string }>(
+        `UPDATE api_keys SET revoked_at = now() WHERE merchant_id = $1 AND id = $2 AND revoked_at IS NULL RETURNING name, key_prefix`,
+        [merchant.id, id],
+      );
+      const row = result.rows[0];
+      if (!row) return false;
+      await audit(client, merchant, 'api_key.revoked', { type: 'api_key', id }, { name: row.name, key_prefix: row.key_prefix });
+      return true;
+    });
   }
 
   async createInvoice(merchant: MerchantContext, idempotencyKey: string, input: CreateInvoiceInput): Promise<InvoiceRecord> {
@@ -290,6 +377,10 @@ export class PostgresApiServices implements ApiServices {
         );
         const invoice = this.toInvoice(insert.rows[0]!);
         await enqueueInvoiceEvent(client, this.catalog, invoice.id, 'invoice.created');
+        // API keys create invoices at shop volume; only payment links made by people are audited.
+        if (merchant.actor?.type === 'user') {
+          await audit(client, merchant, 'invoice.created', { type: 'invoice', id: invoice.id }, { amount: invoice.amount, currency: invoice.currency, order_id: invoice.order_id });
+        }
         await client.query(
           `INSERT INTO idempotency_keys (merchant_id, key, request_hash, response, expires_at)
            VALUES ($1, $2, $3, $4, now() + interval '24 hours')`, [merchant.id, idempotencyKey, hash, JSON.stringify(invoice)],
@@ -324,8 +415,18 @@ export class PostgresApiServices implements ApiServices {
        FROM invoice_payments WHERE invoice_id = $1 ORDER BY observed_at`, [id],
     );
     const path = await this.pool.query<{ derivation_path: string | null }>('SELECT derivation_path FROM invoices WHERE merchant_id = $1 AND id = $2', [merchant.id, id]);
+    const history = await this.pool.query<{ from_status: InvoiceTimelineEntry['from_status']; to_status: InvoiceTimelineEntry['status']; received_amount_base_units: string; created_at: Date }>(
+      `SELECT from_status, to_status, received_amount_base_units, created_at FROM invoice_status_history
+       WHERE invoice_id = $1 ORDER BY id`, [id],
+    );
     return {
       invoice,
+      timeline: history.rows.map((row) => ({
+        status: row.to_status,
+        from_status: row.from_status,
+        received_amount: asset ? formatBaseUnits(BigInt(row.received_amount_base_units), asset.decimals) : row.received_amount_base_units,
+        at: row.created_at.toISOString(),
+      })),
       derivation_path: path.rows[0]?.derivation_path ?? null,
       payments: payments.rows.map((row) => ({
         transaction_id: row.transaction_id,
@@ -493,6 +594,7 @@ export class PostgresApiServices implements ApiServices {
       );
       if (result.rows[0]) {
         await enqueueInvoiceEvent(client, this.catalog, id, 'invoice.cancelled');
+        await audit(client, merchant, 'invoice.cancelled', { type: 'invoice', id }, { order_id: result.rows[0].order_id });
         return this.toInvoice(result.rows[0]);
       }
       const existing = await client.query('SELECT 1 FROM invoices WHERE merchant_id = $1 AND id = $2', [merchant.id, id]);
@@ -616,6 +718,13 @@ export class PostgresApiServices implements ApiServices {
              updated_at = now()`,
           [merchant.id, wallet.asset, wallet.network, wallet.xpub, wallet.address],
         );
+        if (!previous || changed) {
+          const key = wallet.xpub ?? wallet.address ?? '';
+          await audit(client, merchant, previous ? 'wallet.replaced' : 'wallet.added', { type: 'wallet', id: `${wallet.asset}:${wallet.network}` }, {
+            asset: wallet.asset, network: wallet.network, source: wallet.xpub ? 'extended_public_key' : 'address',
+            public_key_hint: key.length > 16 ? `${key.slice(0, 8)}…${key.slice(-6)}` : key,
+          });
+        }
       }
     });
     return this.getAccount(merchant);
@@ -630,7 +739,9 @@ export class PostgresApiServices implements ApiServices {
       );
       if (open.rowCount) throw new ApiError(409, 'wallet_in_use', 'Close open invoices on this network before removing its wallet.', 'wallets');
       const removed = await client.query('DELETE FROM merchant_wallets WHERE merchant_id = $1 AND asset = $2 AND network = $3', [merchant.id, asset, network]);
-      return removed.rowCount === 1;
+      if (removed.rowCount !== 1) return false;
+      await audit(client, merchant, 'wallet.removed', { type: 'wallet', id: `${asset}:${network}` }, { asset, network });
+      return true;
     });
   }
 
@@ -648,10 +759,15 @@ export class PostgresApiServices implements ApiServices {
       signingSecret = `whsec_${randomBytes(32).toString('base64url')}`;
       encryptedSecret = encryptSecret(signingSecret, encryptionKey);
     }
-    await this.pool.query(
-      'UPDATE merchants SET default_webhook_url = $2, webhook_secret_ciphertext = $3 WHERE id = $1',
-      [merchant.id, url, encryptedSecret],
-    );
+    await this.transaction(async (client) => {
+      const before = await client.query<{ default_webhook_url: string | null }>('SELECT default_webhook_url FROM merchants WHERE id = $1 FOR UPDATE', [merchant.id]);
+      await client.query(
+        'UPDATE merchants SET default_webhook_url = $2, webhook_secret_ciphertext = $3 WHERE id = $1',
+        [merchant.id, url, encryptedSecret],
+      );
+      if (before.rows[0]?.default_webhook_url !== url) await audit(client, merchant, 'webhook.updated', { type: 'webhook', id: 'default' }, { url, previous_url: before.rows[0]?.default_webhook_url ?? null });
+      if (signingSecret) await audit(client, merchant, 'webhook.secret_rotated', { type: 'webhook', id: 'default' });
+    });
     return { webhook_url: url, ...(signingSecret ? { signing_secret: signingSecret } : {}) };
   }
 
@@ -669,7 +785,235 @@ export class PostgresApiServices implements ApiServices {
        VALUES ($1, 'webhook.test', $2, $3, $4)`,
       [merchant.id, config.default_webhook_url, config.webhook_secret_ciphertext, JSON.stringify(payload)],
     );
+    await audit(this.pool, merchant, 'webhook.test_sent', { type: 'webhook', id: 'default' }, { url: config.default_webhook_url });
     return { accepted: true };
+  }
+
+  async listAuditLog(merchant: MerchantContext, query: { limit: number; cursor?: string; action?: string }): Promise<{ data: AuditEntry[]; next_cursor: string | null }> {
+    const params: unknown[] = [merchant.id];
+    let where = 'merchant_id = $1';
+    if (query.cursor) { params.push(query.cursor); where += ` AND id < $${params.length}::bigint`; }
+    if (query.action) {
+      params.push(query.action);
+      // "wallet" matches every wallet.* action, "wallet.added" only that one.
+      where += query.action.includes('.') ? ` AND action = $${params.length}` : ` AND split_part(action, '.', 1) = $${params.length}`;
+    }
+    params.push(query.limit + 1);
+    const result = await this.pool.query<{
+      id: string; action: string; actor_type: AuditEntry['actor']['type']; actor_id: string | null; actor_label: string | null;
+      target_type: string | null; target_id: string | null; details: Record<string, unknown>; ip: string | null; created_at: Date;
+    }>(
+      `SELECT id::text, action, actor_type, actor_id, actor_label, target_type, target_id, details, host(ip) AS ip, created_at
+       FROM audit_log WHERE ${where} ORDER BY audit_log.id DESC LIMIT $${params.length}`, params,
+    );
+    const rows = result.rows.slice(0, query.limit);
+    return {
+      data: rows.map((row) => ({
+        id: row.id,
+        action: row.action,
+        actor: { type: row.actor_type, id: row.actor_id, label: row.actor_label },
+        target: row.target_type && row.target_id ? { type: row.target_type, id: row.target_id } : null,
+        details: row.details,
+        ip: row.ip,
+        created_at: row.created_at.toISOString(),
+      })),
+      next_cursor: result.rows.length > query.limit ? rows.at(-1)!.id : null,
+    };
+  }
+
+  async verifyAuditLog(merchant: MerchantContext): Promise<{ intact: boolean; entries: number; broken_at: string | null }> {
+    const result = await this.pool.query<{ broken_at: string | null; entries: number }>(
+      `SELECT orbitt_verify_audit_log($1)::text AS broken_at, (SELECT count(*)::int FROM audit_log WHERE merchant_id = $1) AS entries`,
+      [merchant.id],
+    );
+    const row = result.rows[0]!;
+    return { intact: row.broken_at === null, entries: row.entries, broken_at: row.broken_at };
+  }
+
+  async listTeam(session: DashboardSession): Promise<{ members: TeamMember[]; invitations: TeamInvitation[] }> {
+    const members = await this.pool.query<MemberRow>(
+      `SELECT ${MEMBER_COLUMNS} FROM merchant_users WHERE merchant_id = $1
+       ORDER BY disabled_at IS NOT NULL, array_position(ARRAY['owner', 'admin', 'developer', 'viewer']::varchar[], role), created_at`,
+      [session.merchant.id],
+    );
+    const invitations = await this.pool.query<{ id: string; email: string; role: Role; invited_by: string | null; created_at: Date; expires_at: Date }>(
+      `SELECT i.id, i.email, i.role, u.email AS invited_by, i.created_at, i.expires_at
+       FROM merchant_invitations i LEFT JOIN merchant_users u ON u.id = i.invited_by
+       WHERE i.merchant_id = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()
+       ORDER BY i.created_at DESC`, [session.merchant.id],
+    );
+    return {
+      members: members.rows.map(toMember),
+      invitations: invitations.rows.map((row) => ({ ...row, created_at: row.created_at.toISOString(), expires_at: row.expires_at.toISOString() })),
+    };
+  }
+
+  async createInvitation(session: DashboardSession, emailInput: string, role: Role): Promise<TeamInvitation & { token: string }> {
+    if (!canAssignRole(session.user.role, role)) throw new ApiError(403, 'insufficient_role', 'Only owners can invite owners.', 'role');
+    const email = emailInput.trim().toLowerCase();
+    const token = randomBytes(32).toString('base64url');
+    return this.transaction(async (client) => {
+      const existing = await client.query('SELECT 1 FROM merchant_users WHERE lower(email) = $1', [email]);
+      if (existing.rowCount) throw new ApiError(409, 'email_in_use', 'A dashboard user with this email already exists.', 'email');
+      // A new invitation for the same email replaces the pending one, so the newest link is the only valid one.
+      await client.query(
+        `UPDATE merchant_invitations SET revoked_at = now()
+         WHERE merchant_id = $1 AND lower(email) = $2 AND accepted_at IS NULL AND revoked_at IS NULL`, [session.merchant.id, email],
+      );
+      const inserted = await client.query<{ id: string; created_at: Date; expires_at: Date }>(
+        `INSERT INTO merchant_invitations (merchant_id, email, role, token_hash, invited_by, expires_at)
+         VALUES ($1, $2, $3, $4, $5, now() + ($6 * interval '1 day')) RETURNING id, created_at, expires_at`,
+        [session.merchant.id, email, role, sha256Hex(token), session.user.id, INVITATION_DAYS],
+      );
+      const row = inserted.rows[0]!;
+      await audit(client, session.merchant, 'team.invited', { type: 'invitation', id: row.id }, { email, role });
+      return { id: row.id, email, role, invited_by: session.user.email, created_at: row.created_at.toISOString(), expires_at: row.expires_at.toISOString(), token };
+    });
+  }
+
+  async revokeInvitation(session: DashboardSession, id: string): Promise<boolean> {
+    return this.transaction(async (client) => {
+      const revoked = await client.query<{ email: string; role: Role }>(
+        `UPDATE merchant_invitations SET revoked_at = now()
+         WHERE merchant_id = $1 AND id = $2 AND accepted_at IS NULL AND revoked_at IS NULL RETURNING email, role`, [session.merchant.id, id],
+      );
+      const row = revoked.rows[0];
+      if (!row) return false;
+      if (!canAssignRole(session.user.role, row.role)) throw new ApiError(403, 'insufficient_role', 'Only owners can revoke an owner invitation.');
+      await audit(client, session.merchant, 'team.invitation_revoked', { type: 'invitation', id }, { email: row.email, role: row.role });
+      return true;
+    });
+  }
+
+  async updateMember(session: DashboardSession, id: string, changes: { role?: Role; disabled?: boolean }): Promise<TeamMember | null> {
+    if (id === session.user.id) throw new ApiError(409, 'cannot_change_self', 'You cannot change your own role or disable yourself. Ask another owner or admin.');
+    return this.transaction(async (client) => {
+      // Lock the workspace's members so two admins cannot remove the last owner concurrently.
+      const members = await client.query<MemberRow>(
+        `SELECT ${MEMBER_COLUMNS} FROM merchant_users WHERE merchant_id = $1 ORDER BY id FOR UPDATE`, [session.merchant.id],
+      );
+      const member = members.rows.find((row) => row.id === id);
+      if (!member) return null;
+      if (!canAssignRole(session.user.role, member.role) || (changes.role && !canAssignRole(session.user.role, changes.role))) {
+        throw new ApiError(403, 'insufficient_role', 'Only owners can change owners or make someone an owner.');
+      }
+      const role = changes.role ?? member.role;
+      const disabled = changes.disabled ?? member.disabled_at !== null;
+      const activeOwners = members.rows.filter((row) => row.role === 'owner' && !row.disabled_at && row.id !== id).length;
+      if (member.role === 'owner' && !member.disabled_at && (role !== 'owner' || disabled) && activeOwners === 0) {
+        throw new ApiError(409, 'last_owner', 'A workspace needs at least one active owner.');
+      }
+      const updated = await client.query<MemberRow>(
+        `UPDATE merchant_users SET role = $3, disabled_at = CASE WHEN $4 THEN coalesce(disabled_at, now()) ELSE NULL END
+         WHERE merchant_id = $1 AND id = $2 RETURNING ${MEMBER_COLUMNS}`, [session.merchant.id, id, role, disabled],
+      );
+      if (disabled) await client.query('UPDATE dashboard_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [id]);
+      const target = { type: 'user', id };
+      if (role !== member.role) await audit(client, session.merchant, 'team.role_changed', target, { email: member.email, from: member.role, to: role });
+      if (disabled !== (member.disabled_at !== null)) await audit(client, session.merchant, disabled ? 'team.member_disabled' : 'team.member_enabled', target, { email: member.email });
+      return toMember(updated.rows[0]!);
+    });
+  }
+
+  async getInvitation(token: string): Promise<{ merchant_name: string; email: string; role: Role; expires_at: string } | null> {
+    const result = await this.pool.query<{ merchant_name: string; email: string; role: Role; expires_at: Date }>(
+      `SELECT m.name AS merchant_name, i.email, i.role, i.expires_at FROM merchant_invitations i JOIN merchants m ON m.id = i.merchant_id
+       WHERE i.token_hash = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()`, [sha256Hex(token)],
+    );
+    const row = result.rows[0];
+    return row ? { ...row, expires_at: row.expires_at.toISOString() } : null;
+  }
+
+  async acceptInvitation(token: string, input: { name: string; password: string }, client: ClientInfo = {}): Promise<DashboardLogin> {
+    const passwordHash = await hashPassword(input.password, PASSWORD_OPTIONS);
+    return this.transaction(async (db) => {
+      const found = await db.query<{ id: string; merchant_id: string; merchant_name: string; email: string; role: Role; invited_by: string | null }>(
+        `SELECT i.id, i.merchant_id, m.name AS merchant_name, i.email, i.role, i.invited_by
+         FROM merchant_invitations i JOIN merchants m ON m.id = i.merchant_id
+         WHERE i.token_hash = $1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now() FOR UPDATE OF i`, [sha256Hex(token)],
+      );
+      const invitation = found.rows[0];
+      if (!invitation) throw new ApiError(404, 'invitation_not_found', 'This invitation is invalid, expired or was already used.');
+      let userId: string;
+      try {
+        const inserted = await db.query<{ id: string }>(
+          `INSERT INTO merchant_users (merchant_id, email, password_hash, role, name, password_changed_at) VALUES ($1, $2, $3, $4, $5, now()) RETURNING id`,
+          [invitation.merchant_id, invitation.email, passwordHash, invitation.role, input.name.trim()],
+        );
+        userId = inserted.rows[0]!.id;
+      } catch (error) {
+        if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505') {
+          throw new ApiError(409, 'email_in_use', 'A dashboard user with this email already exists.');
+        }
+        throw error;
+      }
+      await db.query('UPDATE merchant_invitations SET accepted_at = now(), accepted_user_id = $2 WHERE id = $1', [invitation.id, userId]);
+      const user: UserRow = { user_id: userId, merchant_id: invitation.merchant_id, merchant_name: invitation.merchant_name, email: invitation.email, name: input.name.trim(), role: invitation.role };
+      const login = await this.openSession(db, user, client);
+      await audit(db, userContext(user, client), 'team.joined', { type: 'user', id: userId }, { email: invitation.email, role: invitation.role, invitation_id: invitation.id });
+      return login;
+    });
+  }
+
+  async changePassword(session: DashboardSession, currentPassword: string, newPassword: string): Promise<boolean> {
+    const current = await this.pool.query<{ password_hash: string }>('SELECT password_hash FROM merchant_users WHERE id = $1', [session.user.id]);
+    let valid = false;
+    try { valid = !!current.rows[0] && await verifyPassword(current.rows[0].password_hash, currentPassword); }
+    catch { valid = false; }
+    if (!valid) return false;
+    if (currentPassword === newPassword) throw new ApiError(422, 'password_unchanged', 'Choose a password that differs from the current one.', 'new_password');
+    const passwordHash = await hashPassword(newPassword, PASSWORD_OPTIONS);
+    await this.transaction(async (client) => {
+      await client.query('UPDATE merchant_users SET password_hash = $2, password_changed_at = now() WHERE id = $1', [session.user.id, passwordHash]);
+      // Anyone who knew the old password loses access; this session stays signed in.
+      const revoked = await client.query('UPDATE dashboard_sessions SET revoked_at = now() WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL', [session.user.id, session.sessionId]);
+      await audit(client, session.merchant, 'user.password_changed', { type: 'user', id: session.user.id }, { other_sessions_revoked: revoked.rowCount ?? 0 });
+    });
+    return true;
+  }
+
+  async listSessions(session: DashboardSession): Promise<SessionRecord[]> {
+    const result = await this.pool.query<{ id: string; ip: string | null; user_agent: string | null; created_at: Date; last_seen_at: Date; expires_at: Date }>(
+      `SELECT id, host(ip) AS ip, user_agent, created_at, last_seen_at, expires_at FROM dashboard_sessions
+       WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now() ORDER BY last_seen_at DESC`, [session.user.id],
+    );
+    return result.rows.map((row) => ({
+      id: row.id, ip: row.ip, user_agent: row.user_agent, current: row.id === session.sessionId,
+      created_at: row.created_at.toISOString(), last_seen_at: row.last_seen_at.toISOString(), expires_at: row.expires_at.toISOString(),
+    }));
+  }
+
+  async revokeSession(session: DashboardSession, id: string): Promise<boolean> {
+    return this.transaction(async (client) => {
+      const revoked = await client.query(
+        'UPDATE dashboard_sessions SET revoked_at = now() WHERE user_id = $1 AND id = $2 AND revoked_at IS NULL', [session.user.id, id],
+      );
+      if (revoked.rowCount !== 1) return false;
+      await audit(client, session.merchant, 'user.session_revoked', { type: 'session', id });
+      return true;
+    });
+  }
+
+  async revokeOtherSessions(session: DashboardSession): Promise<number> {
+    return this.transaction(async (client) => {
+      const revoked = await client.query(
+        'UPDATE dashboard_sessions SET revoked_at = now() WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL', [session.user.id, session.sessionId],
+      );
+      const count = revoked.rowCount ?? 0;
+      if (count) await audit(client, session.merchant, 'user.sessions_revoked', { type: 'user', id: session.user.id }, { count });
+      return count;
+    });
+  }
+
+  async renameWorkspace(session: DashboardSession, nameInput: string): Promise<MerchantContext> {
+    const name = nameInput.trim();
+    if (!name) throw new ApiError(400, 'invalid_name', 'Enter a workspace name.', 'name');
+    return this.transaction(async (client) => {
+      const before = await client.query<{ name: string }>('SELECT name FROM merchants WHERE id = $1 FOR UPDATE', [session.merchant.id]);
+      await client.query('UPDATE merchants SET name = $2 WHERE id = $1', [session.merchant.id, name]);
+      if (before.rows[0]?.name !== name) await audit(client, session.merchant, 'workspace.renamed', { type: 'workspace', id: session.merchant.id }, { from: before.rows[0]?.name ?? null, to: name });
+      return { id: session.merchant.id, name };
+    });
   }
 
   private encodeCursor(row: InvoiceRow & { cursor_created_at: string }): string {
